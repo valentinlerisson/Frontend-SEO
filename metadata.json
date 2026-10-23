@@ -1,0 +1,8 @@
+{
+  "name": "Auditly - BigApp SEO",
+  "description": "Lancez des audits SEO & GEO à partir d’une URL, suivez vos projets actifs et accédez aux résultats de vos derniers audits.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
