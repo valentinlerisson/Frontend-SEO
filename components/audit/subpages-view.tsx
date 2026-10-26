@@ -1,24 +1,37 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Search, ExternalLink, Sparkles, Check, CheckSquare, Square, FileText } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { useInspection } from '@/components/providers/inspection-provider'
-import { bigHappyAuditData, type SubpageItem } from '@/lib/audit-data'
+import { useAudit } from '@/components/providers/audit-provider'
+import { type SubpageItem } from '@/lib/audit-data'
 
 export function SubpagesView({ projectId = 'big-happy' }: { projectId?: string }) {
   const router = useRouter()
   const { openInspection } = useInspection()
-  const audit = bigHappyAuditData
+  const { audit, savePillars } = useAudit()
 
-  const [subpages, setSubpages] = useState<SubpageItem[]>(audit.subpages)
-  const [selectedIds, setSelectedIds] = useState<string[]>(['accueil', 'wine-and-spirit', 'a-propos'])
+  const [subpages, setSubpages] = useState<SubpageItem[]>(audit.subpages || [])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'indexable' | 'not-indexable'>('all')
   const [aiLaunched, setAiLaunched] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
+
+  useEffect(() => {
+    if (audit.subpages && audit.subpages.length > 0) {
+      setSubpages(audit.subpages)
+      const existingPillars = audit.subpages.filter((p) => p.isPillar).map((p) => p.id)
+      if (existingPillars.length > 0) {
+        setSelectedIds(existingPillars)
+      } else if (selectedIds.length === 0) {
+        setSelectedIds(audit.subpages.slice(0, 10).map((p) => p.id))
+      }
+    }
+  }, [audit.subpages])
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -45,12 +58,16 @@ export function SubpagesView({ projectId = 'big-happy' }: { projectId?: string }
     )
   }
 
-  const handleLaunchAi = () => {
+  const handleLaunchAi = async () => {
     setAiLaunched(true)
-    setTimeout(() => {
+    try {
+      await savePillars(selectedIds)
+    } catch (err) {
+      console.error('Erreur sauvegarde des piliers:', err)
+    } finally {
       setAiLaunched(false)
       router.push(`/projets/${projectId}/seo-editorial`)
-    }, 1200)
+    }
   }
 
   const filteredPages = subpages.filter((page) => {

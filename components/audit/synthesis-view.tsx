@@ -5,10 +5,10 @@ import { ArrowUpRight } from 'lucide-react'
 import { CircularGauge } from './score-gauges'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
-import { bigHappyAuditData } from '@/lib/audit-data'
+import { useAudit } from '@/components/providers/audit-provider'
 
 export function SynthesisView({ projectId = 'big-happy' }: { projectId?: string }) {
-  const audit = bigHappyAuditData
+  const { audit } = useAudit()
 
   return (
     <div className="flex flex-col gap-6">

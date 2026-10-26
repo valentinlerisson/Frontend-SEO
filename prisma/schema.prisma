@@ -1,0 +1,111 @@
+// Prisma Schema — SQLite pour le développement local autonome
+// Pour basculer sur PostgreSQL en production, remplacer 'sqlite' par 'postgresql'
+// et adapter les types de champs @map.
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  domain      String   @unique
+  name        String
+  faviconUrl  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Cascade delete stricte : supprimer un projet supprime son audit et ses données
+  audits      Audit[]
+
+  @@map("projects")
+}
+
+model Audit {
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status           String    @default("IDLE") // IDLE, QUEUED, CRAWLING_TECH, AWAITING_AI_SELECTION, ANALYZING_AI, COMPLETED, FAILED
+  progress         Int       @default(0) // 0 à 100%
+
+  overallScore     Float?
+  techScore        Float?
+  editorialScore   Float?
+  geoScore         Float?
+
+  totalPagesCount  Int       @default(0)
+  pillarPagesCount Int       @default(0)
+  crawlStartedAt   DateTime?
+  completedAt      DateTime?
+  errorMessage     String?
+
+  pages            Page[]
+  issues           Issue[]
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("audits")
+}
+
+model Page {
+  id              String   @id @default(cuid())
+  auditId         String
+  audit           Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  url             String
+  path            String
+  httpStatus      Int      @default(200)
+  depth           Int      @default(0)
+  isPillar        Boolean  @default(false)
+  isIndexable     Boolean  @default(true)
+
+  title           String?
+  metaDescription String?
+  h1              String?
+  h2Count         Int      @default(0)
+  wordCount       Int      @default(0)
+  inlinksCount    Int      @default(0)
+  outlinksCount   Int      @default(0)
+
+  pageScore       Float?
+  techScore       Float?
+  editorialScore  Float?
+  geoScore        Float?
+
+  metricsRaw      String?  // Stocké en JSON string pour compatibilité SQLite/Postgres
+  aiEvaluationRaw String?  // Stocké en JSON string pour compatibilité SQLite/Postgres
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([auditId, url])
+  @@index([auditId, isPillar])
+  @@map("pages")
+}
+
+model Issue {
+  id             String   @id @default(cuid())
+  auditId        String
+  audit          Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  pillar         String   // TECH, EDITORIAL, GEO
+  severity       String   // CRITICAL, WARNING, INFO
+  code           String
+  title          String
+  description    String
+  recommendation String
+  stepsToResolve String   // Stocké en JSON string (tableau de strings) pour SQLite
+
+  affectedUrl    String?
+  metadata       String?  // Stocké en JSON string
+
+  createdAt      DateTime @default(now())
+
+  @@index([auditId, pillar, severity])
+  @@map("issues")
+}

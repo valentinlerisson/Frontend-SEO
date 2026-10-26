@@ -14,10 +14,11 @@ import {
 } from 'lucide-react'
 import { SemiCircleGauge } from './score-gauges'
 import { useInspection, type InspectionTab } from '@/components/providers/inspection-provider'
-import { bigHappyAuditData, getInspectionDataForPage } from '@/lib/audit-data'
+import { useAudit } from '@/components/providers/audit-provider'
 
 export function PageInspectionSheet() {
   const { isOpen, pageId, tab, closeInspection, setTab } = useInspection()
+  const { audit, getInspection } = useAudit()
 
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>({
     '0': true,
@@ -28,15 +29,10 @@ export function PageInspectionSheet() {
 
   if (!isOpen || !pageId) return null
 
-  // Lookup page from mock data
-  const subpage = bigHappyAuditData.subpages.find((p) => p.id === pageId)
-  const isPillar =
-    subpage?.isPillar ||
-    pageId === 'wine-and-spirit' ||
-    pageId === 'accueil' ||
-    pageId === 'a-propos'
-
-  const inspection = getInspectionDataForPage(pageId)
+  // Recherche dans les sous-pages réelles
+  const subpage = audit.subpages.find((p) => p.id === pageId)
+  const isPillar = Boolean(subpage?.isPillar)
+  const inspection = getInspection(pageId)
 
   const toggleAccordion = (key: string) => {
     setOpenAccordions((prev) => ({ ...prev, [key]: !prev[key] }))

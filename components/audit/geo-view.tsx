@@ -6,11 +6,11 @@ import { SemiCircleGauge, TrendAreaChart } from './score-gauges'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { useInspection } from '@/components/providers/inspection-provider'
-import { bigHappyAuditData } from '@/lib/audit-data'
+import { useAudit } from '@/components/providers/audit-provider'
 
 export function GeoView({ projectId = 'big-happy' }: { projectId?: string }) {
   const { openInspection } = useInspection()
-  const audit = bigHappyAuditData
+  const { audit } = useAudit()
   const [searchQuery, setSearchQuery] = useState('')
 
   const filteredPillars = audit.pillarPages.filter((p) => {

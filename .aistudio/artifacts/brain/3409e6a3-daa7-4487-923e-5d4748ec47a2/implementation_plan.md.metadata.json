@@ -1,0 +1,6 @@
+{
+  "summary":  "Plan d'implémentation du fichier maître de spécifications et d'architecture backend (Fichier.md), intégrant le modèle de scoring exhaustif (Technique, Éditorial, GEO), l'architecture hexagonale, la stack PostgreSQL/Prisma, BullMQ/Redis et la passerelle unifiée d'IA.",
+  "updatedAt":  "2026-10-26T08:49:30.362374025Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

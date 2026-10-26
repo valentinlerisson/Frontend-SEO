@@ -6,7 +6,8 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowUpRight, ChevronDown, ChevronRight, Search } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
-import { bigHappyAuditData, type GlobalIssueCategory } from '@/lib/audit-data'
+import { useAudit } from '@/components/providers/audit-provider'
+import { type GlobalIssueCategory } from '@/lib/audit-data'
 
 export function GlobalIssuesView({ projectId = 'big-happy' }: { projectId?: string }) {
   const router = useRouter()
@@ -16,7 +17,7 @@ export function GlobalIssuesView({ projectId = 'big-happy' }: { projectId?: stri
   const [activeCategory, setActiveCategory] = useState<GlobalIssueCategory>('all')
   const [expandedIssue, setExpandedIssue] = useState<string | null>('thin-content')
 
-  const audit = bigHappyAuditData
+  const { audit } = useAudit()
 
   const filterTabs: { label: string; key: GlobalIssueCategory }[] = [
     { label: 'All', key: 'all' },

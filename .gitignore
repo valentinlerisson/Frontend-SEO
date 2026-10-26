@@ -14,3 +14,10 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+
+# SQLite local databases
+*.db
+*.db-journal
+
+# Graphify exports
+graphify-out/
