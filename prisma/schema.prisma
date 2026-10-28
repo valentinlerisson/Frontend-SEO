@@ -77,6 +77,13 @@ model Page {
   editorialScore  Float?
   geoScore        Float?
 
+  // Requête cible (module éditorial) : AUTO = déduite par l'IA, MANUAL = saisie utilisateur
+  targetQuery       String?
+  targetQuerySource String?  // AUTO | MANUAL
+  // Hash du contenu crawlé, et hash (contenu + requête manuelle) de la dernière analyse IA
+  contentHash       String?
+  analyzedHash      String?
+
   metricsRaw      String?  // Stocké en JSON string pour compatibilité SQLite/Postgres
   aiEvaluationRaw String?  // Stocké en JSON string pour compatibilité SQLite/Postgres
 

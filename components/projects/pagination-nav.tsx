@@ -56,7 +56,7 @@ export function PaginationNav({ page, pageCount, onPageChange }: PaginationNavPr
                 className={cn(
                   navButton,
                   'min-w-8 justify-center tabular-nums',
-                  item === page ? 'text-muted-foreground' : 'text-foreground hover:text-primary',
+                  item === page ? 'text-muted-foreground' : 'text-foreground hover:text-primary-ink',
                 )}
               >
                 {item}
@@ -69,7 +69,7 @@ export function PaginationNav({ page, pageCount, onPageChange }: PaginationNavPr
             type="button"
             onClick={() => onPageChange(page + 1)}
             disabled={page === pageCount}
-            className={cn(navButton, 'text-foreground enabled:hover:text-primary disabled:text-muted-foreground')}
+            className={cn(navButton, 'text-foreground enabled:hover:text-primary-ink disabled:text-muted-foreground')}
           >
             Suivant
             <ChevronRight className="size-5" aria-hidden="true" />

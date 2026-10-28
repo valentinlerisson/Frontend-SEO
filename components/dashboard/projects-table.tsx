@@ -11,7 +11,7 @@ const columns = ['Projets/Domaines', 'Statut', 'Score Global', 'Dernier Audit', 
 
 export function ProjectsTable({ projects }: ProjectsTableProps) {
   return (
-    <section aria-labelledby="recent-audits-title" className="rounded-2xl bg-card p-3 md:p-4">
+    <section aria-labelledby="recent-audits-title" className="glass-card rounded-2xl border p-3 md:p-4">
       <h2 id="recent-audits-title" className="sr-only">
         Derniers audits
       </h2>

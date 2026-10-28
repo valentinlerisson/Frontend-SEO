@@ -1,28 +1,52 @@
 'use client'
 
 import { useState } from 'react'
+import { ImpactBadge } from './impact-badge'
 import Link from 'next/link'
 import { ChevronLeft, Search, FileText, ExternalLink } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { useInspection } from '@/components/providers/inspection-provider'
-import { bigHappyAuditData } from '@/lib/audit-data'
+import { getInspectionTarget } from '@/lib/issue-routing'
+import { getIssueColumns } from './issue-metrics'
+import { useAudit } from '@/components/providers/audit-provider'
+import { AuditStateGate } from './audit-state-gate'
 
 export function IndividualIssueView({
-  projectId = 'big-happy',
-  issueId = 'thin-content',
+  projectId,
+  issueId,
 }: {
-  projectId?: string
-  issueId?: string
+  projectId: string
+  issueId: string
 }) {
   const { openInspection } = useInspection()
-  const audit = bigHappyAuditData
-  const issue =
-    audit.globalIssues.find((i) => i.id === issueId) ||
-    audit.globalIssues.find((i) => i.id === 'thin-content')!
-
+  const { audit, state } = useAudit()
   const [searchQuery, setSearchQuery] = useState('')
 
+  if (state !== 'SUCCESS' || !audit) return <AuditStateGate currentTitle="Issues & Tips" />
+
+  const issue = audit.globalIssues.find((i) => i.id === issueId)
+
+  if (!issue) {
+    return (
+      <div className="flex flex-col gap-6">
+        <AuditHeader domain={audit.domain} currentTitle="Issues & Tips" />
+        <section className="glass-card rounded-2xl border p-10 text-center">
+          <p className="text-sm text-muted-foreground">Anomalie introuvable pour cet audit.</p>
+          <Link
+            href={`/projets/${projectId}/global-issues`}
+            className="mt-4 inline-flex items-center gap-1.5 text-base font-semibold text-primary-ink hover:opacity-80"
+          >
+            <ChevronLeft className="size-5" />
+            Retour aux erreurs
+          </Link>
+        </section>
+      </div>
+    )
+  }
+
+  const target = getInspectionTarget(issue)
+  const columns = getIssueColumns(issue)
   const impactedUrls = issue.impactedUrls || []
   const filteredUrls = impactedUrls.filter(
     (item) =>
@@ -35,23 +59,28 @@ export function IndividualIssueView({
       <AuditHeader domain={audit.domain} currentTitle={`Issues & Tips / ${issue.title.split('(')[0].trim()}`} />
 
       {/* Main Container */}
-      <section className="rounded-2xl border border-[#3e3e3e] bg-[#222222] p-5 md:p-6 shadow-md">
+      <section className="glass-card rounded-2xl border p-5 md:p-6">
         {/* Top bar with Back button, Title, Search, Export */}
-        <div className="flex flex-col gap-4 border-b border-[#333333] pb-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-4 border-b border-shade-33 pb-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-6">
             <Link
               href={`/projets/${projectId}/global-issues`}
-              className="inline-flex items-center gap-1.5 text-base font-semibold text-primary transition-opacity hover:opacity-80"
+              className="inline-flex items-center gap-1.5 text-base font-semibold text-primary-ink transition-opacity hover:opacity-80"
             >
               <ChevronLeft className="size-5" />
               Retour aux erreurs
             </Link>
 
             <div>
-              <h1 className="text-xl font-bold text-white tracking-tight sm:text-2xl">
-                Thin Content
-              </h1>
-              <p className="text-xs text-muted-foreground">{issue.impactSummary || '34 URL thin content'}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold text-foreground tracking-tight sm:text-2xl">
+                  {issue.title}
+                </h1>
+                <ImpactBadge impact={issue.impact} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {issue.impactSummary || `${issue.impactCount ?? impactedUrls.length} URL impactées`}
+              </p>
             </div>
           </div>
 
@@ -64,7 +93,7 @@ export function IndividualIssueView({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Rechercher une URL..."
-                className="w-full rounded-xl border border-[#444444] bg-[#161616] py-2 pl-10 pr-4 text-sm text-white placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-xl border border-shade-44 bg-shade-16 py-2 pl-10 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
             </div>
 
@@ -73,9 +102,9 @@ export function IndividualIssueView({
         </div>
 
         {/* Issue Explanation Box */}
-        <div className="mt-6 rounded-xl border border-[#3e3e3e] bg-[#1c1c1c] p-5">
+        <div className="mt-6 rounded-xl border border-shade-3e bg-shade-1c p-5">
           <div className="flex items-center gap-3 mb-2">
-            <h2 className="text-lg font-bold text-white">Thin Content</h2>
+            <h2 className="text-lg font-bold text-foreground">{issue.title}</h2>
             <span className="rounded-full bg-primary px-3 py-0.5 text-xs font-bold text-primary-foreground">
               {issue.impactCount} pages impactées
             </span>
@@ -83,6 +112,11 @@ export function IndividualIssueView({
           <p className="text-sm text-foreground/90 leading-relaxed max-w-4xl">
             {issue.description}
           </p>
+          {issue.recommendation && (
+            <p className="mt-2 text-sm text-muted-foreground leading-relaxed max-w-4xl">
+              {issue.recommendation}
+            </p>
+          )}
         </div>
 
         {/* Impacted URLs Table */}
@@ -90,19 +124,15 @@ export function IndividualIssueView({
           <table className="w-full min-w-[800px] border-separate border-spacing-0 text-left">
             <thead>
               <tr className="text-base text-foreground">
-                <th scope="col" className="bg-[#383838] px-6 py-4 font-normal rounded-l-xl">
+                <th scope="col" className="bg-shade-38 px-6 py-4 font-normal rounded-l-xl">
                   URL
                 </th>
-                <th scope="col" className="bg-[#383838] px-6 py-4 font-normal">
-                  Thin Content
-                </th>
-                <th scope="col" className="bg-[#383838] px-6 py-4 font-normal">
-                  Profondeur
-                </th>
-                <th scope="col" className="bg-[#383838] px-6 py-4 font-normal">
-                  Inlinks
-                </th>
-                <th scope="col" className="bg-[#383838] px-6 py-4 font-normal rounded-r-xl">
+                {columns.map((col) => (
+                  <th key={col.header} scope="col" className="bg-shade-38 px-6 py-4 font-normal">
+                    {col.header}
+                  </th>
+                ))}
+                <th scope="col" className="bg-shade-38 px-6 py-4 font-normal rounded-r-xl">
                   Page Details
                 </th>
               </tr>
@@ -110,51 +140,38 @@ export function IndividualIssueView({
             <tbody>
               {filteredUrls.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={columns.length + 2} className="py-10 text-center text-sm text-muted-foreground">
                     Aucune URL trouvée pour cette recherche.
                   </td>
                 </tr>
               ) : (
                 filteredUrls.map((item, index) => {
                   const isLast = index === filteredUrls.length - 1
-                  const cellClass = `px-6 py-5 align-middle ${isLast ? '' : 'border-b border-[#333333]'}`
-                  const isCritical = (item.wordCount || 0) < 400
+                  const cellClass = `px-6 py-5 align-middle ${isLast ? '' : 'border-b border-shade-33'}`
 
                   return (
-                    <tr key={item.id} className="hover:bg-[#282828]/50 transition-colors">
+                    <tr key={item.id} className="hover:bg-shade-28/50 transition-colors">
                       <th scope="row" className={`${cellClass} font-normal`}>
                         <button
                           type="button"
-                          onClick={() => openInspection(item.id, 'tech')}
-                          className="block text-left text-base font-semibold text-white hover:text-primary transition-colors cursor-pointer"
+                          onClick={() => openInspection(item.id, target.tab, target.section)}
+                          className="block text-left text-base font-semibold text-foreground hover:text-primary-ink transition-colors cursor-pointer"
                         >
                           {item.path}
                         </button>
                       </th>
-                      <td className={cellClass}>
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="font-semibold text-white">{item.wordCount} mots</span>
-                          <span
-                            className={`size-2.5 rounded-full ${
-                              isCritical ? 'bg-[#ef4444]' : 'bg-[#eab308]'
-                            }`}
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            (critères + 500 mots)
-                          </span>
-                        </div>
-                      </td>
-                      <td className={`${cellClass} text-sm text-foreground`}>{item.depth}</td>
-                      <td className={`${cellClass} text-sm text-foreground font-semibold`}>
-                        {item.inlinks}
-                      </td>
+                      {columns.map((col) => (
+                        <td key={col.header} className={cellClass}>
+                          {col.render(item)}
+                        </td>
+                      ))}
                       <td className={cellClass}>
                         <div className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={() => openInspection(item.id)}
+                            onClick={() => openInspection(item.id, target.tab, target.section)}
                             title="Ouvrir l'inspection de la page"
-                            className="rounded-lg p-1.5 text-muted-foreground hover:bg-[#383838] hover:text-white transition-colors"
+                            className="rounded-lg p-1.5 text-muted-foreground hover:bg-shade-38 hover:text-foreground transition-colors"
                           >
                             <FileText className="size-5" />
                           </button>
@@ -163,7 +180,7 @@ export function IndividualIssueView({
                             target="_blank"
                             rel="noopener noreferrer"
                             title="Visiter la page"
-                            className="rounded-lg p-1.5 text-muted-foreground hover:bg-[#383838] hover:text-primary transition-colors"
+                            className="rounded-lg p-1.5 text-muted-foreground hover:bg-shade-38 hover:text-primary-ink transition-colors"
                           >
                             <ExternalLink className="size-5" />
                           </a>

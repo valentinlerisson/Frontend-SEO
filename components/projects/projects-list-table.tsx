@@ -13,7 +13,7 @@ const columns = ['Projets/ Domaines', 'Statut', 'Tech', 'Edito', 'GEO', 'Dernier
 
 export function ProjectsListTable({ projects, onRelaunch, onDelete }: ProjectsListTableProps) {
   return (
-    <section aria-labelledby="projects-list-title" className="rounded-2xl bg-card p-3 md:p-5">
+    <section aria-labelledby="projects-list-title" className="glass-card border rounded-2xl p-3 md:p-5">
       <h2 id="projects-list-title" className="sr-only">
         Liste des projets
       </h2>

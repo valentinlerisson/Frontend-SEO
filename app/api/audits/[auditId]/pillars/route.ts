@@ -8,7 +8,7 @@ export async function POST(
   try {
     const { auditId } = await params;
     const body = await req.json();
-    const { pillarPageIds } = body;
+    const { pillarPageIds, targetQueries } = body;
 
     if (!Array.isArray(pillarPageIds)) {
       return NextResponse.json(
@@ -17,7 +17,15 @@ export async function POST(
       );
     }
 
-    const updatedAudit = await AuditService.selectPillarsAndAnalyze(auditId, pillarPageIds);
+    // Requêtes cibles saisies dans Subpages : { idPage: requête }, 120 caractères au plus
+    const queries: Record<string, string> = {};
+    if (targetQueries && typeof targetQueries === 'object' && !Array.isArray(targetQueries)) {
+      for (const [pageId, value] of Object.entries(targetQueries as Record<string, unknown>)) {
+        if (typeof value === 'string' && value.trim() && value.length <= 120) queries[pageId] = value.trim();
+      }
+    }
+
+    const updatedAudit = await AuditService.selectPillarsAndAnalyze(auditId, pillarPageIds, queries);
 
     return NextResponse.json({
       success: true,

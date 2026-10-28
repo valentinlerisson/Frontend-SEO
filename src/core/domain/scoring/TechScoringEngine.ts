@@ -1,8 +1,46 @@
-import { Issue, RawPageData, TechScoreResult } from '../types';
+import { CoreWebVitals, Issue, RawPageData, TechScoreResult } from '../types';
+import { TECH_THRESHOLDS } from './thresholds';
+
+const stripTrailingSlash = (url: string) => url.replace(/\/+$/, '');
 
 export class TechScoringEngine {
   public static calculate(page: RawPageData): TechScoreResult {
     const issues: Issue[] = [];
+
+    // Aucune réponse HTTP : les balises ne peuvent pas être jugées (évite une cascade de fausses alertes)
+    if (page.fetchError) {
+      issues.push({
+        id: `fetch-failed-${page.path}`,
+        pillar: 'TECH',
+        severity: 'CRITICAL',
+        code: 'FETCH_FAILED',
+        title: 'Page injoignable lors du crawl',
+        description: `Aucune réponse HTTP n'a été reçue (${page.fetchError}). Le contenu de la page n'a pas pu être analysé.`,
+        recommendation: 'Vérifiez que la page répond rapidement (moins de 10 s) puis relancez l’audit.',
+        stepsToResolve: [
+          'Ouvrir l’URL dans un navigateur pour confirmer qu’elle répond.',
+          'Contrôler le temps de réponse du serveur et les éventuelles limitations de débit (pare-feu, CDN).',
+          'Relancer l’audit.'
+        ],
+        affectedUrl: page.url
+      });
+      return {
+        score: 0,
+        unmeasuredPoints: 0,
+        breakdown: {
+          coreWebVitals: 0,
+          architecture: 0,
+          crawlability: 0,
+          securityAndHttp: 0,
+          htmlStructure: 0,
+          metadataAndMedia: 0
+        },
+        issues
+      };
+    }
+
+    // Critères que le crawl ne mesure pas : exclus du score plutôt que crédités de points fictifs
+    let unmeasuredPoints = 0;
     let cwvScore = 0;
     let archScore = 0;
     let crawlScore = 0;
@@ -11,10 +49,13 @@ export class TechScoringEngine {
     let metaScore = 0;
 
     // 1. Core Web Vitals (25 pts)
-    const cwv = page.coreWebVitals ?? { lcp: 2.1, inp: 150, cls: 0.04 }; // Valeurs par défaut si indisponibles
+    // Core Web Vitals : non mesurés par le crawl HTTP (nécessite PageSpeed Insights)
+    const cwv: CoreWebVitals = page.coreWebVitals ?? {};
     
     // LCP (10 pts)
-    if (cwv.lcp <= 2.5) {
+    if (typeof cwv.lcp !== 'number') {
+      unmeasuredPoints += 10;
+    } else if (cwv.lcp <= 2.5) {
       cwvScore += 10;
     } else if (cwv.lcp <= 4.0) {
       cwvScore += 5;
@@ -54,8 +95,10 @@ export class TechScoringEngine {
       });
     }
 
-    // INP (8 pts)
-    if (cwv.inp <= 200) {
+    // INP (8 pts) : seulement disponible en données de terrain (trafic suffisant)
+    if (typeof cwv.inp !== 'number') {
+      unmeasuredPoints += 8;
+    } else if (cwv.inp <= 200) {
       cwvScore += 8;
     } else if (cwv.inp <= 500) {
       cwvScore += 4;
@@ -96,7 +139,9 @@ export class TechScoringEngine {
     }
 
     // CLS (7 pts)
-    if (cwv.cls <= 0.1) {
+    if (typeof cwv.cls !== 'number') {
+      unmeasuredPoints += 7;
+    } else if (cwv.cls <= 0.1) {
       cwvScore += 7;
     } else if (cwv.cls <= 0.25) {
       cwvScore += 3;
@@ -137,8 +182,10 @@ export class TechScoringEngine {
     }
 
     // 2. Architecture & Maillage Interne (20 pts)
-    // Profondeur de clic (10 pts)
-    if (page.depth <= 3) {
+    // Profondeur de clic (10 pts). Une page atteinte seulement par le sitemap n'a pas de profondeur mesurable.
+    if (page.depth < 0) {
+      unmeasuredPoints += 10;
+    } else if (page.depth <= 3) {
       archScore += 10;
     } else if (page.depth === 4) {
       archScore += 5;
@@ -176,10 +223,36 @@ export class TechScoringEngine {
       });
     }
 
-    // Connexité & Pages Orphelines (10 pts)
-    if (page.inlinksCount >= 3) {
+    // Connexité & Pages Orphelines (10 pts). La page d'accueil est le point d'entrée du crawl : jamais orpheline.
+    // Si le crawl a été tronqué (limite de pages), les liens entrants sont un minimum : un compte faible n'est pas
+    // une preuve, le critère sort du dénominateur au lieu de pénaliser à tort.
+    const graphComplete = page.linkGraphComplete !== false;
+    if (page.depth === 0 || page.inlinksCount >= TECH_THRESHOLDS.goodInlinks) {
       archScore += 10;
-    } else if (page.inlinksCount >= 1) {
+    } else if (page.discoveredVia === 'sitemap' && page.httpStatus >= 400) {
+      // URL du sitemap en erreur : l'anomalie HTTP suffit, le maillage d'une page inexistante n'a pas de sens
+      unmeasuredPoints += 10;
+    } else if (page.discoveredVia === 'sitemap' && graphComplete) {
+      archScore += 0;
+      issues.push({
+        id: `arch-orphan-${page.path}`,
+        pillar: 'TECH',
+        severity: 'CRITICAL',
+        code: 'ORPHAN_PAGE',
+        title: 'Page orpheline : listée dans le sitemap, aucun lien depuis le site',
+        description:
+          "Cette URL figure dans le sitemap, mais aucune page accessible depuis l'accueil ne pointe vers elle (tous les liens du site ont été suivis).",
+        recommendation: "Reliez cette page à la structure interne du site, ou retirez-la du sitemap si elle est obsolète.",
+        stepsToResolve: [
+          'Ajouter un lien d’accès depuis une page pilier parente.',
+          "Vérifier si l'URL doit être conservée ou redirigée en 301 si obsolète."
+        ],
+        affectedUrl: page.url,
+        metadata: { inlinksCount: page.inlinksCount }
+      });
+    } else if (!graphComplete) {
+      unmeasuredPoints += 10;
+    } else {
       archScore += 5;
       issues.push({
         id: `arch-inlinks-${page.path}`,
@@ -187,7 +260,7 @@ export class TechScoringEngine {
         severity: 'WARNING',
         code: 'LOW_INLINKS_COUNT',
         title: 'Faible maillage interne entrant',
-        description: `Cette page ne reçoit que ${page.inlinksCount} lien(s) interne(s) sur tout le site.`,
+        description: `Seules ${page.inlinksCount} page(s) du site pointent vers cette page (tous les liens du site ont été suivis).`,
         recommendation: 'Créez au moins 3 liens contextuels pointant vers cette page avec des ancres variées.',
         stepsToResolve: [
           'Identifier 2 ou 3 pages thématiquement proches.',
@@ -196,28 +269,13 @@ export class TechScoringEngine {
         affectedUrl: page.url,
         metadata: { inlinksCount: page.inlinksCount }
       });
-    } else {
-      archScore += 0;
-      issues.push({
-        id: `arch-orphan-${page.path}`,
-        pillar: 'TECH',
-        severity: 'CRITICAL',
-        code: 'ORPHAN_PAGE',
-        title: 'Page orpheline détectée (0 lien interne)',
-        description: "Aucun lien interne ne pointe vers cette URL. Elle n'est accessible que via le sitemap ou un accès direct.",
-        recommendation: "Reliez d'urgence cette page orpheline à la structure interne du site.",
-        stepsToResolve: [
-          'Ajouter un lien d’accès depuis une page pilier parente.',
-          "Vérifier si l'URL doit être conservée ou redirigée en 301 si obsolète."
-        ],
-        affectedUrl: page.url,
-        metadata: { inlinksCount: 0 }
-      });
     }
 
     // 3. Crawlabilité & Indexation (15 pts)
     // robots.txt (5 pts)
-    if (!page.isBlockedByRobotsTxt) {
+    if (page.isBlockedByRobotsTxt === undefined) {
+      unmeasuredPoints += 5;
+    } else if (!page.isBlockedByRobotsTxt) {
       crawlScore += 5;
     } else {
       crawlScore += 0;
@@ -239,7 +297,9 @@ export class TechScoringEngine {
     }
 
     // Sitemap XML (5 pts)
-    if (page.inSitemap) {
+    if (page.inSitemap === undefined) {
+      unmeasuredPoints += 5;
+    } else if (page.inSitemap) {
       crawlScore += 5;
     } else {
       crawlScore += 2;
@@ -259,11 +319,13 @@ export class TechScoringEngine {
       });
     }
 
-    // Balise Canonique (5 pts)
-    if (page.canonicalUrl && page.canonicalUrl === page.url) {
+    // Balise Canonique (5 pts). Une canonique vers une autre URL peut retirer la page de l'index : c'est plus
+    // grave qu'une canonique absente, souvent bénigne. Comparaison sans protocole ni www, sur l'URL finale.
+    const canonicalKey = (url: string) => stripTrailingSlash(url.replace(/^https?:\/\/(www\.)?/, ''));
+    if (page.canonicalUrl && canonicalKey(page.canonicalUrl) === canonicalKey(page.finalUrl ?? page.url)) {
       crawlScore += 5;
     } else if (!page.canonicalUrl) {
-      crawlScore += 2;
+      crawlScore += 3;
       issues.push({
         id: `crawl-canonical-missing-${page.path}`,
         pillar: 'TECH',
@@ -279,7 +341,21 @@ export class TechScoringEngine {
         affectedUrl: page.url
       });
     } else {
-      crawlScore += 3; // Canonique pointant vers une autre URL
+      crawlScore += 0;
+      issues.push({
+        id: `crawl-canonical-elsewhere-${page.path}`,
+        pillar: 'TECH',
+        severity: 'WARNING',
+        code: 'CANONICAL_ELSEWHERE',
+        title: 'Canonique vers une autre URL',
+        description: `La balise canonique désigne ${page.canonicalUrl} : Google risque d’indexer cette autre URL à la place de la page.`,
+        recommendation: 'Si la page doit être indexée, faites pointer sa canonique vers elle-même.',
+        stepsToResolve: [
+          'Vérifier que l’URL désignée est bien la version de référence voulue.',
+          `Sinon, remplacer la canonique par <link rel="canonical" href="${page.finalUrl ?? page.url}">.`
+        ],
+        affectedUrl: page.url
+      });
     }
 
     // 4. Sécurité & Codes HTTP (15 pts)
@@ -304,20 +380,22 @@ export class TechScoringEngine {
       });
     }
 
-    // Code de réponse HTTP (5 pts)
-    if (page.httpStatus === 200) {
+    // Code de réponse HTTP (5 pts) : réponse finale en 2xx ; si des redirections sont traversées, leurs codes comptent
+    const redirects = page.redirectStatuses ?? [];
+    const temporary = redirects.some((status) => ![301, 308].includes(status));
+    if (page.httpStatus >= 200 && page.httpStatus < 300 && redirects.length === 0) {
       securityScore += 5;
-    } else if ([301, 308].includes(page.httpStatus)) {
+    } else if (page.httpStatus >= 200 && page.httpStatus < 300 && !temporary) {
       securityScore += 3;
-    } else if ([302, 307].includes(page.httpStatus)) {
+    } else if (page.httpStatus < 400) {
       securityScore += 1;
       issues.push({
         id: `sec-temp-redirect-${page.path}`,
         pillar: 'TECH',
         severity: 'WARNING',
         code: 'TEMPORARY_REDIRECT',
-        title: 'Redirection temporaire 302/307',
-        description: 'La page effectue une redirection temporaire au lieu d’une redirection permanente 301.',
+        title: `Redirection temporaire (${redirects.filter((status) => ![301, 308].includes(status)).join(', ') || page.httpStatus})`,
+        description: `L’URL liée passe par une redirection temporaire (codes : ${redirects.join(' puis ') || page.httpStatus}) au lieu d’une redirection permanente 301.`,
         recommendation: 'Convertissez la redirection temporaire en 301 si le déplacement est définitif.',
         stepsToResolve: [
           'Changer le code de redirection en HTTP 301 dans vos règles de routage.'
@@ -332,7 +410,7 @@ export class TechScoringEngine {
         severity: 'CRITICAL',
         code: `HTTP_${page.httpStatus}`,
         title: `Erreur HTTP ${page.httpStatus}`,
-        description: `La page répond avec le code d’erreur ${page.httpStatus}. Le contenu est inaccessible.`,
+        description: `La page répond avec le code d’erreur ${page.httpStatus}. Le contenu est inaccessible.${page.discoveredVia === 'sitemap' ? ' Cette URL est listée dans le sitemap XML : corrigez-la ou retirez-la du sitemap.' : ''}`,
         recommendation: 'Corrigez la ressource manquante ou effectuez une redirection 301.',
         stepsToResolve: [
           'Si 404 : Créer la page ou rediriger en 301 vers l’équivalent le plus proche.',
@@ -342,11 +420,10 @@ export class TechScoringEngine {
       });
     }
 
-    // Chaîne de redirection (5 pts)
-    if (page.redirectHops === 0) {
+    // Chaîne de redirection (5 pts). Une redirection unique est déjà comptée dans « Code HTTP » : seule une chaîne
+    // (2 sauts ou plus) coûte des points ici, pour ne pas pénaliser deux fois le même fait.
+    if (page.redirectHops <= 1) {
       securityScore += 5;
-    } else if (page.redirectHops === 1) {
-      securityScore += 3;
     } else {
       securityScore += 0;
       issues.push({
@@ -366,17 +443,32 @@ export class TechScoringEngine {
 
     // 5. Structure HTML & Hiérarchie des Titres (15 pts)
     // H1 Unique (8 pts)
-    if (page.h1Count === 1 && page.h1 && page.h1.trim().length >= 10 && page.h1.trim().length <= 70) {
+    // Un H1 unique et non vide suffit : sa longueur n'a aucun effet démontré sur le classement
+    if (page.h1Count === 1 && page.h1 && page.h1.trim().length > 0) {
       htmlScore += 8;
+      const h1Length = page.h1.trim().length;
+      if (h1Length < TECH_THRESHOLDS.h1.min || h1Length > TECH_THRESHOLDS.h1.max) {
+        issues.push({
+          id: `html-h1-length-${page.path}`,
+          pillar: 'TECH',
+          severity: 'INFO',
+          code: 'H1_LENGTH_UNOPTIMIZED',
+          title: `H1 ${h1Length > TECH_THRESHOLDS.h1.max ? 'long' : 'court'} (${h1Length} caractères)`,
+          description: `Le H1 compte ${h1Length} caractères. Google ne classe pas selon la longueur du H1 ; un H1 de ${TECH_THRESHOLDS.h1.min} à ${TECH_THRESHOLDS.h1.max} caractères reste plus lisible.`,
+          recommendation: 'Optionnel : reformuler le H1 pour qu’il soit plus lisible.',
+          stepsToResolve: ['Reformuler le H1 en plaçant le sujet principal au début.'],
+          affectedUrl: page.url
+        });
+      }
     } else if (page.h1Count > 1) {
-      htmlScore += 3;
+      htmlScore += 8;
       issues.push({
         id: `html-multiple-h1-${page.path}`,
         pillar: 'TECH',
-        severity: 'WARNING',
+        severity: 'INFO',
         code: 'MULTIPLE_H1',
         title: `Multiples balises H1 détectées (${page.h1Count})`,
-        description: `La page comporte ${page.h1Count} balises <h1>, ce qui dilue le signal sémantique principal.`,
+        description: `La page comporte ${page.h1Count} balises <h1>. Google l'accepte, mais un H1 unique clarifie le sujet principal.`,
         recommendation: 'Conservez un seul H1 et convertissez les titres secondaires en H2.',
         stepsToResolve: [
           'Conserver une seule balise <h1> en haut de page.',
@@ -389,7 +481,7 @@ export class TechScoringEngine {
       issues.push({
         id: `html-missing-h1-${page.path}`,
         pillar: 'TECH',
-        severity: 'CRITICAL',
+        severity: 'WARNING',
         code: 'MISSING_H1',
         title: 'Balise H1 absente ou vide',
         description: 'La page ne possède aucun titre principal balisé en <h1>.',
@@ -401,18 +493,17 @@ export class TechScoringEngine {
       });
     }
 
-    // Hiérarchie H2-H6 (7 pts)
-    if (page.headingHierarchyValid) {
-      htmlScore += 7;
-    } else if (page.headingHierarchyErrors.length <= 2) {
-      htmlScore += 3;
+    // Hiérarchie H2-H6 : aucun effet démontré sur le classement, utile pour l'accessibilité.
+    // Diagnostic hors score : ses 7 points sortent du dénominateur au lieu d'être accordés d'office.
+    unmeasuredPoints += 7;
+    if (!page.headingHierarchyValid) {
       issues.push({
         id: `html-headings-hierarchy-${page.path}`,
         pillar: 'TECH',
-        severity: 'WARNING',
+        severity: 'INFO',
         code: 'HEADING_HIERARCHY_SKIP',
         title: 'Saut dans la hiérarchie des titres (Hn)',
-        description: `Des sauts de niveau de titres ont été détectés (${page.headingHierarchyErrors.join(', ')}).`,
+        description: `Des sauts de niveau de titres ont été détectés (${page.headingHierarchyErrors.slice(0, 5).join(', ')}${page.headingHierarchyErrors.length > 5 ? '…' : ''}).`,
         recommendation: 'Respectez l’arborescence sans sauter de niveau (ex: H2 puis H3).',
         stepsToResolve: [
           'Ne pas passer directement de H2 à H4 sans H3 intermédiaire.',
@@ -420,16 +511,15 @@ export class TechScoringEngine {
         ],
         affectedUrl: page.url
       });
-    } else {
-      htmlScore += 0;
     }
 
     // 6. Balisage, Métadonnées & Médias (10 pts)
     // Title & Meta description (5 pts)
     const titleLen = page.title?.trim().length ?? 0;
     const descLen = page.metaDescription?.trim().length ?? 0;
-    const titleOk = titleLen >= 30 && titleLen <= 65;
-    const descOk = descLen >= 110 && descLen <= 165;
+    const { title: titleRange, metaDescription: descRange } = TECH_THRESHOLDS;
+    const titleOk = titleLen >= titleRange.min && titleLen <= titleRange.max;
+    const descOk = descLen >= descRange.min && descLen <= descRange.max;
 
     if (titleOk && descOk) {
       metaScore += 5;
@@ -438,14 +528,14 @@ export class TechScoringEngine {
       issues.push({
         id: `meta-lengths-${page.path}`,
         pillar: 'TECH',
-        severity: 'WARNING',
+        severity: 'INFO',
         code: 'METADATA_LENGTH_UNOPTIMIZED',
         title: 'Balises Title ou Meta Description hors gabarit',
-        description: `Title : ${titleLen} car. (optimal : 30-65) | Description : ${descLen} car. (optimal : 110-165).`,
+        description: `Title : ${titleLen} car. (optimal : ${titleRange.min}-${titleRange.max}) | Description : ${descLen} car. (optimal : ${descRange.min}-${descRange.max}).`,
         recommendation: 'Ajustez les longueurs de votre titre et description pour éviter la troncature dans la SERP.',
         stepsToResolve: [
-          'Calibrer la balise <title> entre 45 et 60 caractères.',
-          'Rédiger une meta description percutante entre 130 et 155 caractères.'
+          `Calibrer la balise <title> entre ${titleRange.min} et ${titleRange.max} caractères.`,
+          `Rédiger une meta description percutante entre ${descRange.min} et ${descRange.max} caractères.`
         ],
         affectedUrl: page.url
       });
@@ -454,10 +544,15 @@ export class TechScoringEngine {
       issues.push({
         id: `meta-missing-${page.path}`,
         pillar: 'TECH',
-        severity: 'CRITICAL',
+        severity: titleLen === 0 ? 'CRITICAL' : 'INFO',
         code: 'MISSING_METADATA',
         title: 'Balise Title ou Meta Description manquante',
-        description: titleLen === 0 ? 'Balise <title> manquante.' : 'Meta description manquante.',
+        description:
+          titleLen === 0 && descLen === 0
+            ? 'Balise <title> et meta description manquantes.'
+            : titleLen === 0
+              ? 'Balise <title> manquante.'
+              : 'Meta description manquante.',
         recommendation: 'Renseignez impérativement ces métadonnées fondamentales.',
         stepsToResolve: [
           'Ajouter une balise <title> unique et descriptive dans le <head>.',
@@ -507,15 +602,25 @@ export class TechScoringEngine {
     }
 
     // Calcul du score technique brut
-    let totalScore = cwvScore + archScore + crawlScore + securityScore + htmlScore + metaScore;
+    // Les critères non mesurés sortent du dénominateur : le score reste sur 100
+    const rawScore = cwvScore + archScore + crawlScore + securityScore + htmlScore + metaScore;
+    let totalScore = (rawScore / Math.max(1, 100 - unmeasuredPoints)) * 100;
 
     // Pénalité bloquante : si 4xx/5xx ou non-indexable, plafonner le score technique à 20 max
     if (page.httpStatus >= 400 || !page.isIndexable) {
       totalScore = Math.min(20, totalScore);
     }
 
+    // Page en erreur 4xx/5xx : son contenu est une page d'erreur, les contrôles de H1, méta ou images n'ont pas
+    // de sens. Seules les anomalies d'accès sont gardées (pas de fausses alertes en cascade).
+    const reported =
+      page.httpStatus >= 400
+        ? issues.filter((issue) => issue.code.startsWith('HTTP_') || issue.code === 'BLOCKED_BY_ROBOTS_TXT')
+        : issues;
+
     return {
       score: Math.round(totalScore),
+      unmeasuredPoints,
       breakdown: {
         coreWebVitals: cwvScore,
         architecture: archScore,
@@ -524,7 +629,7 @@ export class TechScoringEngine {
         htmlStructure: htmlScore,
         metadataAndMedia: metaScore
       },
-      issues
+      issues: reported
     };
   }
 }

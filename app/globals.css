@@ -35,6 +35,73 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-primary-ink: var(--primary-ink);
+  --color-yellow-pale: var(--yellow-pale);
+  --color-sky-pale: var(--sky-pale);
+  --color-red-pale: var(--red-pale);
+  --color-shade-14: var(--shade-14);
+  --color-shade-16: var(--shade-16);
+  --color-shade-18: var(--shade-18);
+  --color-shade-19: var(--shade-19);
+  --color-shade-1a: var(--shade-1a);
+  --color-shade-1c: var(--shade-1c);
+  --color-shade-1e: var(--shade-1e);
+  --color-shade-22: var(--shade-22);
+  --color-shade-24: var(--shade-24);
+  --color-shade-25: var(--shade-25);
+  --color-shade-26: var(--shade-26);
+  --color-shade-28: var(--shade-28);
+  --color-shade-2a: var(--shade-2a);
+  --color-shade-2b: var(--shade-2b);
+  --color-shade-2c: var(--shade-2c);
+  --color-shade-2f: var(--shade-2f);
+  --color-shade-30: var(--shade-30);
+  --color-shade-33: var(--shade-33);
+  --color-shade-38: var(--shade-38);
+  --color-shade-3a: var(--shade-3a);
+  --color-shade-3e: var(--shade-3e);
+  --color-shade-44: var(--shade-44);
+  --color-shade-4a: var(--shade-4a);
+  --color-shade-55: var(--shade-55);
+  --color-shade-66: var(--shade-66);
+  --color-shade-a3: var(--shade-a3);
+  --color-shade-d4: var(--shade-d4);
+  --color-amber-soft: var(--amber-soft);
+  --color-yellow-soft: var(--yellow-soft);
+  --color-red-soft: var(--red-soft);
+  --color-green-soft: var(--green-soft);
+  --color-sky-soft: var(--sky-soft);
+  --color-blue-soft: var(--blue-soft);
+  --color-indigo-pale: var(--indigo-pale);
+  --color-indigo-soft: var(--indigo-soft);
+  --color-teal-soft: var(--teal-soft);
+  --color-orange-soft: var(--orange-soft);
+  --color-tint-yellow: var(--tint-yellow);
+  --color-tint-yellow-2: var(--tint-yellow-2);
+  --color-tint-yellow-3: var(--tint-yellow-3);
+  --color-tint-yellow-4: var(--tint-yellow-4);
+  --color-line-yellow: var(--line-yellow);
+  --color-tint-orange: var(--tint-orange);
+  --color-line-orange: var(--line-orange);
+  --color-chip-orange: var(--chip-orange);
+  --color-tint-red: var(--tint-red);
+  --color-tint-indigo: var(--tint-indigo);
+  --color-chip-indigo: var(--chip-indigo);
+  --color-line-indigo: var(--line-indigo);
+  --color-tint-teal: var(--tint-teal);
+  --color-tint-blue: var(--tint-blue);
+  --color-grad-indigo-from: var(--grad-indigo-from);
+  --color-grad-indigo-to: var(--grad-indigo-to);
+  --color-primary-ink: var(--primary-ink);
+  --color-yellow-pale: var(--yellow-pale);
+  --color-sky-pale: var(--sky-pale);
+  --color-red-pale: var(--red-pale);
+  --color-green-ink: var(--green-ink);
+  --color-amber-ink: var(--amber-ink);
+  --color-sky-ink: var(--sky-ink);
+  --color-orange-ink: var(--orange-ink);
+  --color-inset: var(--inset);
+  --color-inset-strong: var(--inset-strong);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -44,7 +111,7 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* BigApp SEO — thème sombre, accent jaune */
+/* BigApp SEO — thème sombre par défaut, accent jaune */
 :root {
   color-scheme: dark;
   --background: #000000;
@@ -77,6 +144,248 @@
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: #f5e400;
   --sidebar-ring: #f5e400;
+  /* Teintes des composants (valeurs sombres d'origine) */
+  --shade-14: #141414;
+  --shade-16: #161616;
+  --shade-18: #181818;
+  --shade-19: #191919;
+  --shade-1a: #1a1a1a;
+  --shade-1c: #1c1c1c;
+  --shade-1e: #1e1e1e;
+  --shade-22: #222222;
+  --shade-24: #242424;
+  --shade-25: #252525;
+  --shade-26: #262626;
+  --shade-28: #282828;
+  --shade-2a: #2a2a2a;
+  --shade-2b: #2b2b2b;
+  --shade-2c: #2c2c2c;
+  --shade-2f: #2f2f2f;
+  --shade-30: #303030;
+  --shade-33: #333333;
+  --shade-38: #383838;
+  --shade-3a: #3a3a3a;
+  --shade-3e: #3e3e3e;
+  --shade-44: #444444;
+  --shade-4a: #4a4a4a;
+  --shade-55: #555555;
+  --shade-66: #666666;
+  --shade-a3: #a3a3a3;
+  --shade-d4: #d4d4d4;
+  --amber-soft: #fde68a;
+  --yellow-soft: #fde047;
+  --red-soft: #fca5a5;
+  --green-soft: #86efac;
+  --sky-soft: #7dd3fc;
+  --blue-soft: #93c5fd;
+  --indigo-pale: #c7d2fe;
+  --indigo-soft: #a5b4fc;
+  --teal-soft: #5eead4;
+  --orange-soft: #fed7aa;
+  --tint-yellow: #221f11;
+  --tint-yellow-2: #292411;
+  --tint-yellow-3: #3d3215;
+  --tint-yellow-4: #292716;
+  --line-yellow: #6b5809;
+  --tint-orange: #451a03;
+  --line-orange: #78350f;
+  --chip-orange: #92400e;
+  --tint-red: #221515;
+  --tint-indigo: #1e1b4b;
+  --chip-indigo: #3730a3;
+  --line-indigo: #4338ca;
+  --tint-teal: #1e3a3a;
+  --tint-blue: #2a374a;
+  --grad-indigo-from: #241f5c;
+  --grad-indigo-to: #1b1846;
+  --green-ink: #12b10f;
+  --amber-ink: #eab308;
+  --sky-ink: #38bdf8;
+  --orange-ink: #f59e0b;
+  --inset: rgb(0 0 0 / 0.2);
+  --inset-strong: rgb(0 0 0 / 0.4);
+  --primary-ink: #f5e400;
+  /* Verre dépoli (glassmorphism) */
+  --yellow-pale: #fef9c3;
+  --sky-pale: #e0f2fe;
+  --red-pale: #fecaca;
+  --glass-bg: rgb(40 40 40 / 0.45);
+  --glass-panel-bg: rgb(26 26 26 / 0.78);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-highlight: rgb(255 255 255 / 0.08);
+  --glass-shadow: 0 8px 32px rgb(0 0 0 / 0.45);
+  --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0.015) 45%, rgb(255 255 255 / 0.04));
+  --ambient-1: rgb(245 228 0 / 0.14);
+  --ambient-2: rgb(99 102 241 / 0.2);
+  --ambient-3: rgb(18 177 15 / 0.08);
+}
+
+/* Mode clair : choisi avec le bouton de la barre latérale (attribut data-theme sur <html>) */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --background: #f4f4f5;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #f5e400;
+  --primary-foreground: #000000;
+  --secondary: #e4e4e7;
+  --secondary-foreground: #18181b;
+  --muted: #ececee;
+  --muted-foreground: #5f5f68;
+  --accent: #e4e4e7;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --success: #12b10f;
+  --success-foreground: #ffffff;
+  --table-header: #e4e4e7;
+  --border: #d4d4d8;
+  --input: #d4d4d8;
+  --ring: #c9b800;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #18181b;
+  --sidebar-primary: #f5e400;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #f0f0f2;
+  --sidebar-accent-foreground: #18181b;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: #c9b800;
+  --shade-14: #f4f4f5;
+  --shade-16: #f5f5f6;
+  --shade-18: #f6f6f7;
+  --shade-19: #f6f6f7;
+  --shade-1a: #f7f7f8;
+  --shade-1c: #f8f8f9;
+  --shade-1e: #f9f9fa;
+  --shade-22: #fafafa;
+  --shade-24: #fbfbfb;
+  --shade-25: #fbfbfb;
+  --shade-26: #fafafa;
+  --shade-28: #fcfcfc;
+  --shade-2a: #fdfdfd;
+  --shade-2b: #ffffff;
+  --shade-2c: #ffffff;
+  --shade-2f: #f6f6f7;
+  --shade-30: #ffffff;
+  --shade-33: #ececee;
+  --shade-38: #efeff1;
+  --shade-3a: #e8e8eb;
+  --shade-3e: #e2e2e6;
+  --shade-44: #d8d8dc;
+  --shade-4a: #d1d1d6;
+  --shade-55: #c4c4c8;
+  --shade-66: #a1a1aa;
+  --shade-a3: #71717a;
+  --shade-d4: #3f3f46;
+  --amber-soft: #92400e;
+  --yellow-soft: #854d0e;
+  --red-soft: #b91c1c;
+  --green-soft: #15803d;
+  --sky-soft: #0369a1;
+  --blue-soft: #1d4ed8;
+  --indigo-pale: #3730a3;
+  --indigo-soft: #4338ca;
+  --teal-soft: #0f766e;
+  --orange-soft: #9a3412;
+  --tint-yellow: #fefce8;
+  --tint-yellow-2: #fef9c3;
+  --tint-yellow-3: #fef08a;
+  --tint-yellow-4: #fefce8;
+  --line-yellow: #e5cf4a;
+  --tint-orange: #fff7ed;
+  --line-orange: #fdba74;
+  --chip-orange: #fed7aa;
+  --tint-red: #fef2f2;
+  --tint-indigo: #eef2ff;
+  --chip-indigo: #c7d2fe;
+  --line-indigo: #a5b4fc;
+  --tint-teal: #f0fdfa;
+  --tint-blue: #eff6ff;
+  --grad-indigo-from: #eef2ff;
+  --grad-indigo-to: #e0e7ff;
+  --green-ink: #15803d;
+  --amber-ink: #a16207;
+  --sky-ink: #0369a1;
+  --orange-ink: #b45309;
+  --inset: rgb(0 0 0 / 0.035);
+  --inset-strong: rgb(0 0 0 / 0.05);
+  --primary-ink: #7a6c00;
+  --yellow-pale: #713f12;
+  --sky-pale: #075985;
+  --red-pale: #991b1b;
+  --glass-bg: rgb(255 255 255 / 0.5);
+  --glass-panel-bg: rgb(255 255 255 / 0.82);
+  --glass-border: rgb(255 255 255 / 0.8);
+  --glass-highlight: rgb(255 255 255 / 0.95);
+  --glass-shadow: 0 8px 32px rgb(24 24 27 / 0.1);
+  --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.15) 50%, rgb(255 255 255 / 0.35));
+  --ambient-1: rgb(245 228 0 / 0.3);
+  --ambient-2: rgb(99 102 241 / 0.18);
+  --ambient-3: rgb(18 177 15 / 0.1);
+}
+
+/* Verre dépoli : fond translucide flouté, liseré clair et reflet en haut.
+   glass : barres et cartes ; glass-panel : fenêtres et tiroirs, plus opaques pour rester lisibles */
+@utility glass {
+  background-color: var(--glass-bg);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+
+@utility glass-panel {
+  background-color: var(--glass-panel-bg);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(28px) saturate(170%);
+}
+
+/* Carte en verre : toutes les cartes du site, avec un reflet diagonal */
+@utility glass-card {
+  background-color: var(--glass-bg);
+  background-image: var(--glass-sheen);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(180%);
+}
+
+/* Léger soulèvement au survol, réservé aux petites cartes (scores, KPI) */
+@utility glass-lift {
+  transition: transform 200ms ease, box-shadow 200ms ease;
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: inset 0 1px 0 var(--glass-highlight), 0 14px 40px rgb(0 0 0 / 0.25);
+  }
+}
+
+/* Lueurs d'ambiance derrière le contenu : donnent au verre quelque chose à flouter */
+@utility ambient-backdrop {
+  background-image:
+    radial-gradient(48rem 32rem at 85% -5%, var(--ambient-1), transparent 70%),
+    radial-gradient(44rem 32rem at 5% 105%, var(--ambient-2), transparent 70%),
+    radial-gradient(36rem 26rem at 45% 45%, var(--ambient-3), transparent 70%);
+  background-attachment: fixed;
+}
+
+/* Transparence réduite demandée, ou flou non pris en charge : fonds opaques */
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-panel,
+  .glass-card {
+    background-color: var(--card);
+    background-image: none;
+    backdrop-filter: none;
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass,
+  .glass-panel,
+  .glass-card {
+    background-color: var(--card);
+  }
 }
 
 @layer base {
@@ -85,5 +394,33 @@
   }
   body {
     @apply bg-background text-foreground font-sans;
+  }
+}
+
+/* Export PDF d'une page (fiche d'inspection) : seule la feuille #page-print-sheet est imprimée */
+#page-print-sheet {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body > *:not(#page-print-sheet) {
+    display: none !important;
+  }
+
+  #page-print-sheet {
+    display: block !important;
+    background: #fff;
+    color: #111;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

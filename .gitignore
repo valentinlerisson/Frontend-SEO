@@ -21,3 +21,10 @@ node_modules
 
 # Graphify exports
 graphify-out/
+# Secrets locaux (clés API)
+.env
+
+# SERP : profil Chrome dédié, cache des recherches et captures de debug
+.serp-profile/
+.cache/
+debug/

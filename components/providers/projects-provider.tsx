@@ -3,7 +3,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import {
   emptyScores,
-  initialProjects,
   initialStats,
   projectNameFromDomain,
   type Project,
@@ -12,6 +11,8 @@ import {
 
 type ProjectsContextValue = {
   projects: Project[]
+  /** false tant que la première réponse de GET /api/projects n'est pas arrivée */
+  loaded: boolean
   stats: typeof initialStats
   launchAudit: (domain: string) => void
   relaunchAudit: (projectId: string) => void
@@ -21,7 +22,8 @@ type ProjectsContextValue = {
 const ProjectsContext = createContext<ProjectsContextValue | null>(null)
 
 export function ProjectsProvider({ children }: { children: React.ReactNode }) {
-  const [projects, setProjects] = useState<Project[]>(initialProjects)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [stats, setStats] = useState(initialStats)
 
   // Récupérer les projets réels depuis l'API backend
@@ -30,33 +32,34 @@ export function ProjectsProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch('/api/projects')
       if (!res.ok) return
       const data = await res.json()
-      if (Array.isArray(data.projects) && data.projects.length > 0) {
+      if (Array.isArray(data.projects)) {
         const mapped: Project[] = data.projects.map((p: any) => {
-          const isCrawling = p.auditStatus === 'CRAWLING_TECH' || p.auditStatus === 'QUEUED'
+          const isCrawling = ['QUEUED', 'CRAWLING_TECH', 'ANALYZING_AI'].includes(p.auditStatus)
           const status: AuditStatus = isCrawling ? 'crawling' : 'completed'
+          const lastAuditAt = p.lastAuditAt ? new Date(p.lastAuditAt).getTime() : null
           return {
             id: p.id,
             name: p.name || projectNameFromDomain(p.domain),
             domain: p.domain,
             status,
-            progress: p.progress ?? (isCrawling ? 45 : 100),
+            progress: p.progress ?? 0,
             scores: {
               tech: typeof p.techScore === 'number' ? Math.round(p.techScore) : null,
               edito: typeof p.editorialScore === 'number' ? Math.round(p.editorialScore) : null,
               geo: typeof p.geoScore === 'number' ? Math.round(p.geoScore) : null,
             },
-            lastAuditMinutesAgo: 1,
+            lastAuditMinutesAgo:
+              lastAuditAt === null ? 0 : Math.max(0, Math.floor((Date.now() - lastAuditAt) / 60000)),
           }
         })
 
         setProjects(mapped)
-        setStats((prev) => ({
-          ...prev,
-          activeProjects: mapped.length,
-        }))
+        setStats((prev) => ({ ...prev, activeProjects: mapped.length }))
       }
     } catch (err) {
-      console.warn('Impossible de joindre /api/projects, maintien du cache local', err)
+      console.warn('Impossible de joindre /api/projects', err)
+    } finally {
+      setLoaded(true)
     }
   }, [])
 
@@ -154,6 +157,7 @@ export function ProjectsProvider({ children }: { children: React.ReactNode }) {
     <ProjectsContext.Provider
       value={{
         projects,
+        loaded,
         stats,
         launchAudit,
         relaunchAudit,

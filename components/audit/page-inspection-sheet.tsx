@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   X,
   Bot,
@@ -11,14 +11,31 @@ import {
   XCircle,
   Lock,
   Sparkles,
+  Printer,
 } from 'lucide-react'
 import { SemiCircleGauge } from './score-gauges'
+import { PagePrintSheet } from './page-print-sheet'
+import { EditorialSearchPanel } from './editorial-search-panel'
+import { InspectionItemRow } from './inspection-item-row'
+import { PriorityList } from './priority-list'
+import { EditorialBlock } from './editorial-block'
+import { SchemaSnippetBlock } from './schema-snippet-block'
 import { useInspection, type InspectionTab } from '@/components/providers/inspection-provider'
 import { useAudit } from '@/components/providers/audit-provider'
 
+/** Points sur lesquels le score est calculé : les critères non mesurés ou sans objet sont exclus */
+function CoverageNote({ coverage }: { coverage?: { measured: number; total: number } }) {
+  if (!coverage || coverage.measured >= coverage.total) return null
+  return (
+    <p className="mt-1 max-w-[200px] text-center text-[11px] text-muted-foreground">
+      Calculé sur {coverage.measured} des {coverage.total} points : critères non mesurés ou sans objet exclus
+    </p>
+  )
+}
+
 export function PageInspectionSheet() {
-  const { isOpen, pageId, tab, closeInspection, setTab } = useInspection()
-  const { audit, getInspection } = useAudit()
+  const { isOpen, pageId, tab, section, closeInspection, setTab } = useInspection()
+  const { audit, state, getInspection } = useAudit()
 
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>({
     '0': true,
@@ -27,12 +44,60 @@ export function PageInspectionSheet() {
     '3': false,
   })
 
-  if (!isOpen || !pageId) return null
+  // Ouverture ciblée : n'ouvre que l'accordéon demandé par ?section= et le fait défiler à l'écran
+  useEffect(() => {
+    if (!isOpen || section === null) return
+    setOpenAccordions({ [String(section)]: true })
+    const timer = window.setTimeout(() => {
+      document.getElementById(`inspection-acc-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 60)
+    return () => window.clearTimeout(timer)
+  }, [isOpen, pageId, tab, section])
+
+  if (!isOpen || !pageId || state !== 'SUCCESS' || !audit) return null
 
   // Recherche dans les sous-pages réelles
   const subpage = audit.subpages.find((p) => p.id === pageId)
   const isPillar = Boolean(subpage?.isPillar)
   const inspection = getInspection(pageId)
+
+  if (!inspection) {
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
+      >
+        <div className="absolute inset-0" onClick={closeInspection} />
+        <div className="relative z-10 flex h-full w-full max-w-2xl flex-col items-center justify-center gap-4 glass-panel border-l p-8 text-center">
+          <p className="text-sm text-muted-foreground">Aucune donnée d’inspection pour cette page.</p>
+          <button
+            type="button"
+            onClick={closeInspection}
+            className="rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground hover:bg-[#e0d100]"
+          >
+            Fermer
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Export PDF : la boîte de dialogue d'impression native utilise le titre du document comme nom de fichier
+  const handleExportPdf = () => {
+    const previousTitle = document.title
+    document.title = `Fiche ${subpage?.path ?? inspection.url} - ${audit.domain}`
+    window.print()
+    document.title = previousTitle
+  }
+
+  // Depuis la liste des points à traiter : ouvre le bloc détaillé concerné et l'amène à l'écran
+  const goToSection = (index: number) => {
+    setOpenAccordions((prev) => ({ ...prev, [String(index)]: true }))
+    window.setTimeout(() => {
+      document.getElementById(`inspection-acc-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 60)
+  }
 
   const toggleAccordion = (key: string) => {
     setOpenAccordions((prev) => ({ ...prev, [key]: !prev[key] }))
@@ -42,27 +107,40 @@ export function PageInspectionSheet() {
     <div
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in"
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm transition-opacity animate-in fade-in"
     >
+      <PagePrintSheet audit={audit} inspection={inspection} isPillar={isPillar} />
+
       {/* Backdrop click to close */}
       <div className="absolute inset-0" onClick={closeInspection} />
 
-      <div className="relative flex h-full w-full max-w-2xl flex-col bg-[#141414] text-foreground shadow-2xl border-l border-[#3a3a3a] overflow-hidden animate-in slide-in-from-right duration-300 z-10">
+      <div className="relative flex h-full w-full max-w-2xl flex-col glass-panel text-foreground border-l overflow-hidden animate-in slide-in-from-right duration-300 z-10">
         {/* Header */}
-        <div className="flex flex-col border-b border-[#333333] bg-[#1a1a1a] p-5">
+        <div className="flex flex-col border-b border-shade-33 bg-inset p-5">
           <div className="flex items-center justify-between text-muted-foreground text-sm font-medium mb-1">
             <span>Page Details</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                title="Exporter la fiche de cette page en PDF"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#f5e400] px-3 py-1 text-xs font-semibold text-primary-ink transition-colors hover:bg-[#f5e400] hover:text-black"
+              >
+                <Printer className="size-3.5" aria-hidden="true" />
+                Exporter en PDF
+              </button>
             <button
               type="button"
               onClick={closeInspection}
               aria-label="Fermer le tiroir d'inspection"
-              className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-[#2b2b2b] hover:text-white"
+              className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-shade-2b hover:text-foreground"
             >
               <X className="size-5" />
             </button>
+            </div>
           </div>
 
-          <h2 className="text-xl font-bold text-white tracking-tight leading-snug">
+          <h2 className="text-xl font-bold text-foreground tracking-tight leading-snug">
             {subpage?.title || inspection.title}
           </h2>
 
@@ -71,33 +149,42 @@ export function PageInspectionSheet() {
               href={inspection.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary transition-colors font-mono"
+              className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary-ink transition-colors font-mono"
             >
               {inspection.url}
               <ExternalLink className="size-3" />
             </a>
-            <span className="rounded-full bg-[#12b10f]/20 border border-[#12b10f]/40 px-2 py-0.5 font-bold text-[#12b10f]">
+            <span
+              className={`rounded-full border px-2 py-0.5 font-bold ${
+                inspection.httpStatus >= 400
+                  ? 'bg-[#ef4444]/20 border-[#ef4444]/40 text-[#ef4444]'
+                  : 'bg-[#12b10f]/20 border-[#12b10f]/40 text-green-ink'
+              }`}
+            >
               HTTP {inspection.httpStatus}
             </span>
-            <span className="rounded-full bg-[#2a374a] px-2 py-0.5 text-[#93c5fd]">Index</span>
-            <span className="rounded-full bg-[#1e3a3a] px-2 py-0.5 text-[#5eead4]">Follow</span>
-            <span className="rounded-full bg-[#3d3215] px-2 py-0.5 text-[#fde047]">
+            <span className="rounded-full bg-tint-blue px-2 py-0.5 text-blue-soft">
+              {inspection.indexable ? 'Index' : 'Noindex'}
+            </span>
+            <span className="rounded-full bg-tint-teal px-2 py-0.5 text-teal-soft">
+              {inspection.follow ? 'Follow' : 'Nofollow'}
+            </span>
+            <span className="rounded-full bg-tint-yellow-3 px-2 py-0.5 text-yellow-soft">
               Temps de réponse ({inspection.responseTime})
             </span>
-            <span className="rounded-full bg-[#2b2b2b] px-2 py-0.5 text-muted-foreground">...</span>
           </div>
 
           {/* Navigation Tabs */}
-          <div className="mt-5 flex items-center justify-between border-b border-[#333333] pt-1">
+          <div className="mt-5 flex items-center justify-between border-b border-shade-33 pt-1">
             <button
               type="button"
               onClick={() => setTab('editorial')}
               className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'editorial' ? 'text-white' : 'text-muted-foreground hover:text-foreground'
+                tab === 'editorial' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <span>SEO Éditorial</span>{' '}
-              <span className="ml-1 rounded-full bg-[#3a3a3a] px-2 py-0.5 text-xs font-semibold text-white">
+              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
                 {inspection.editorial.score}%
               </span>
               {tab === 'editorial' && (
@@ -109,11 +196,11 @@ export function PageInspectionSheet() {
               type="button"
               onClick={() => setTab('tech')}
               className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'tech' ? 'text-white' : 'text-muted-foreground hover:text-foreground'
+                tab === 'tech' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <span>Technique & Meta</span>{' '}
-              <span className="ml-1 rounded-full bg-[#3a3a3a] px-2 py-0.5 text-xs font-semibold text-white">
+              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
                 {inspection.tech.score}%
               </span>
               {tab === 'tech' && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
@@ -123,11 +210,11 @@ export function PageInspectionSheet() {
               type="button"
               onClick={() => setTab('geo')}
               className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'geo' ? 'text-white' : 'text-muted-foreground hover:text-foreground'
+                tab === 'geo' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <span>GEO (IA)</span>{' '}
-              <span className="ml-1 rounded-full bg-[#3a3a3a] px-2 py-0.5 text-xs font-semibold text-white">
+              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
                 {inspection.geo.score}%
               </span>
               {tab === 'geo' && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
@@ -138,14 +225,18 @@ export function PageInspectionSheet() {
         {/* Tab Content */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {/* If not a pillar page and user accesses editorial or geo */}
-          {!isPillar && (tab === 'editorial' || tab === 'geo') ? (
+          {(!isPillar || audit.isLocked) && (tab === 'editorial' || tab === 'geo') ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="flex size-16 items-center justify-center rounded-2xl bg-[#2a2a2a] text-primary mb-4">
+              <div className="flex size-16 items-center justify-center rounded-2xl bg-shade-2a text-primary-ink mb-4">
                 <Lock className="size-8" />
               </div>
-              <h3 className="text-xl font-bold text-white">Page non sélectionnée comme Page Pilier</h3>
+              <h3 className="text-xl font-bold text-foreground">
+                {audit.isLocked ? 'Analyse sémantique et GEO verrouillées' : 'Page non sélectionnée comme Page Pilier'}
+              </h3>
               <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                Conformément au cahier des charges et à la protection des coûts API, l'analyse IA (Claude 3.5 Sonnet) est réservée à l'échantillon des 10 à 20 pages piliers stratégiques.
+                {audit.isLocked
+                  ? 'Sélectionnez des pages piliers dans l’onglet Sous-pages pour lancer l’analyse sémantique et GEO.'
+                  : 'L’analyse IA est réservée aux pages piliers sélectionnées.'}
               </p>
               <button
                 type="button"
@@ -159,8 +250,8 @@ export function PageInspectionSheet() {
             /* TAB 1: TECHNIQUE & META */
             <>
               {/* Scores Block */}
-              <div className="rounded-2xl border border-[#3a3a3a] bg-[#1e1e1e] p-5">
-                <h3 className="text-base font-semibold text-white mb-3">Scores</h3>
+              <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
+                <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
                   <div className="md:col-span-5 flex flex-col items-center justify-center">
                     <SemiCircleGauge
@@ -168,12 +259,13 @@ export function PageInspectionSheet() {
                       size={150}
                       label={`Score Technique ${inspection.tech.score}%`}
                     />
+                    <CoverageNote coverage={inspection.tech.coverage} />
                   </div>
                   <div className="md:col-span-7 space-y-2">
                     {inspection.tech.categories.map((cat) => (
                       <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
                         <span className="text-muted-foreground w-36 truncate">{cat.name}</span>
-                        <div className="flex-1 mx-3 h-2 rounded-full bg-[#333333] overflow-hidden">
+                        <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
                           <div
                             className={`h-full rounded-full transition-all duration-700 ${
                               cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
@@ -181,7 +273,7 @@ export function PageInspectionSheet() {
                             style={{ width: `${cat.score}%` }}
                           />
                         </div>
-                        <span className="font-semibold text-white tabular-nums w-10 text-right">
+                        <span className="font-semibold text-foreground tabular-nums w-10 text-right">
                           {cat.score}%
                         </span>
                       </div>
@@ -191,22 +283,9 @@ export function PageInspectionSheet() {
               </div>
 
               {/* Priorités (To-Do) */}
-              <div className="rounded-2xl border border-[#6b5809] bg-[#221f11] p-4 text-sm">
-                <h4 className="font-semibold text-white mb-2">Priorités (To-Do)</h4>
-                <div className="space-y-1.5 text-xs sm:text-sm">
-                  {inspection.tech.priorities.map((item, idx) => (
-                    <div key={idx} className="flex items-start gap-2">
-                      <span
-                        className={`font-bold ${
-                          item.type === 'alert' ? 'text-[#ef4444]' : 'text-[#f5e400]'
-                        }`}
-                      >
-                        {item.type === 'alert' ? 'Alerte :' : 'Optimisation :'}
-                      </span>
-                      <span className="text-foreground">{item.text}</span>
-                    </div>
-                  ))}
-                </div>
+              <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
+                <h4 className="font-semibold text-foreground mb-2">Points à traiter (triés par impact)</h4>
+                <PriorityList items={inspection.tech.priorities} onGo={goToSection} />
               </div>
 
               {/* Accordéons détaillés */}
@@ -214,11 +293,11 @@ export function PageInspectionSheet() {
                 {inspection.tech.accordions.map((acc, index) => {
                   const isOpen = !!openAccordions[String(index)]
                   return (
-                    <div key={acc.title} className="rounded-xl border border-[#333333] bg-[#1e1e1e] overflow-hidden">
+                    <div key={acc.title} id={`inspection-acc-${index}`} className="rounded-xl border border-shade-33 bg-shade-1e overflow-hidden">
                       <button
                         type="button"
                         onClick={() => toggleAccordion(String(index))}
-                        className="flex w-full items-center justify-between p-4 text-left font-semibold text-white hover:bg-[#252525] transition-colors"
+                        className="flex w-full items-center justify-between p-4 text-left font-semibold text-foreground hover:bg-shade-25 transition-colors"
                       >
                         <span>
                           {acc.title} ({acc.scoreText})
@@ -231,28 +310,9 @@ export function PageInspectionSheet() {
                       </button>
 
                       {isOpen && (
-                        <div className="border-t border-[#333333] p-4 space-y-2.5 text-xs sm:text-sm bg-[#191919]">
+                        <div className="border-t border-shade-33 p-4 space-y-2.5 text-xs sm:text-sm bg-shade-19">
                           {acc.items.map((item, i) => (
-                            <div key={i} className="flex items-start gap-2.5">
-                              {item.status === 'valid' ? (
-                                <CheckCircle2 className="size-4 shrink-0 text-[#12b10f] mt-0.5" />
-                              ) : item.status === 'warning' ? (
-                                <AlertTriangle className="size-4 shrink-0 text-[#eab308] mt-0.5" />
-                              ) : (
-                                <XCircle className="size-4 shrink-0 text-[#ef4444] mt-0.5" />
-                              )}
-                              <span
-                                className={
-                                  item.status === 'valid'
-                                    ? 'text-foreground'
-                                    : item.status === 'warning'
-                                    ? 'text-yellow-200/90'
-                                    : 'text-red-200/90'
-                                }
-                              >
-                                {item.text}
-                              </span>
-                            </div>
+                            <InspectionItemRow key={i} item={item} />
                           ))}
                         </div>
                       )}
@@ -264,23 +324,11 @@ export function PageInspectionSheet() {
           ) : tab === 'editorial' ? (
             /* TAB 2: SEO ÉDITORIAL */
             <>
-              {/* Context Banner */}
-              <div className="flex items-center gap-3 rounded-xl border border-[#4338ca] bg-[#1e1b4b] p-3.5 text-xs sm:text-sm text-white">
-                <span className="flex size-7 items-center justify-center rounded-lg bg-[#3730a3] text-primary shrink-0">
-                  <Bot className="size-4" />
-                </span>
-                <p>
-                  <span className="font-bold text-[#c7d2fe]">Analyse IA (Claude 3.5 Sonnet)</span>{' '}
-                  <span className="text-white font-medium">"{inspection.editorial.targetKeyword}"</span>{' '}
-                  <span className="text-muted-foreground text-xs">
-                    {inspection.editorial.isForcedTarget ? '(Cible forcée)' : '(Auto-détecté)'}
-                  </span>
-                </p>
-              </div>
+              <EditorialSearchPanel key={pageId} pageId={pageId} editorial={inspection.editorial} />
 
               {/* Scores Block */}
-              <div className="rounded-2xl border border-[#3a3a3a] bg-[#1e1e1e] p-5">
-                <h3 className="text-base font-semibold text-white mb-3">Scores</h3>
+              <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
+                <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
                   <div className="md:col-span-5 flex flex-col items-center justify-center">
                     <SemiCircleGauge
@@ -288,12 +336,13 @@ export function PageInspectionSheet() {
                       size={150}
                       label={`Score Éditorial ${inspection.editorial.score}%`}
                     />
+                    <CoverageNote coverage={inspection.editorial.coverage} />
                   </div>
                   <div className="md:col-span-7 space-y-1.5">
                     {inspection.editorial.categories.map((cat) => (
                       <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
                         <span className="text-muted-foreground w-40 truncate">{cat.name}</span>
-                        <div className="flex-1 mx-3 h-2 rounded-full bg-[#333333] overflow-hidden">
+                        <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
                           <div
                             className={`h-full rounded-full transition-all duration-700 ${
                               cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
@@ -301,7 +350,7 @@ export function PageInspectionSheet() {
                             style={{ width: `${cat.score}%` }}
                           />
                         </div>
-                        <span className="font-semibold text-white tabular-nums w-10 text-right">
+                        <span className="font-semibold text-foreground tabular-nums w-10 text-right">
                           {cat.score}%
                         </span>
                       </div>
@@ -310,95 +359,92 @@ export function PageInspectionSheet() {
                 </div>
               </div>
 
-              {/* Recommandations critiques (To-Do de l'IA) */}
-              <div className="rounded-2xl border border-[#6b5809] bg-[#221f11] p-4 text-sm">
-                <h4 className="font-semibold text-white mb-2">Recommandations critiques (To-Do de l'IA)</h4>
-                <div className="space-y-1.5 text-xs sm:text-sm">
-                  {inspection.editorial.priorities.map((item, idx) => (
-                    <div key={idx} className="flex items-start gap-2">
-                      <span
-                        className={`font-bold ${
-                          item.type === 'alert' ? 'text-[#ef4444]' : 'text-[#f5e400]'
-                        }`}
-                      >
-                        {item.type === 'alert' ? 'Alerte :' : 'Optimisation :'}
-                      </span>
-                      <span className="text-foreground">{item.text}</span>
-                    </div>
-                  ))}
-                </div>
+              {/* Points à traiter : ceux qui font varier le score, puis les autres */}
+              <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
+                <h4 className="font-semibold text-foreground mb-2">Points à traiter (triés par impact)</h4>
+                <PriorityList items={inspection.editorial.priorities} onGo={goToSection} />
               </div>
 
-              {/* Accordéons avec encart Chain of Thought Claude 3.5 */}
-              <div className="space-y-2.5">
-                {inspection.editorial.accordions.map((acc, index) => {
-                  const isOpen = !!openAccordions[String(index)]
-                  return (
-                    <div key={acc.title} className="rounded-xl border border-[#333333] bg-[#1e1e1e] overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => toggleAccordion(String(index))}
-                        className="flex w-full items-center justify-between p-4 text-left font-semibold text-white hover:bg-[#252525] transition-colors"
-                      >
-                        <span>
-                          {acc.title} ({acc.scoreText})
-                        </span>
-                        <ChevronDown
-                          className={`size-4 text-muted-foreground transition-transform ${
-                            isOpen ? 'rotate-180' : ''
-                          }`}
-                        />
-                      </button>
-
-                      {isOpen && (
-                        <div className="border-t border-[#333333] p-4 space-y-3 text-xs sm:text-sm bg-[#191919]">
-                          {/* Chain of Thought Box */}
-                          <div className="rounded-lg border border-[#3730a3]/50 bg-[#1e1b4b]/40 p-3 text-xs italic text-[#c7d2fe] leading-relaxed flex items-start gap-2.5">
-                            <Bot className="size-4 shrink-0 text-[#818cf8] mt-0.5" />
-                            <span>{acc.aiReasoning}</span>
-                          </div>
-
-                          <div className="space-y-2 pt-1">
-                            {acc.items.map((item, i) => (
-                              <div key={i} className="flex items-start gap-2.5">
-                                {item.status === 'valid' ? (
-                                  <CheckCircle2 className="size-4 shrink-0 text-[#12b10f] mt-0.5" />
-                                ) : item.status === 'warning' ? (
-                                  <AlertTriangle className="size-4 shrink-0 text-[#eab308] mt-0.5" />
-                                ) : (
-                                  <XCircle className="size-4 shrink-0 text-[#ef4444] mt-0.5" />
-                                )}
-                                <span
-                                  className={
-                                    item.status === 'valid'
-                                      ? 'text-foreground'
-                                      : item.status === 'warning'
-                                      ? 'text-yellow-200/90'
-                                      : 'text-red-200/90'
-                                }
-                              >
-                                {item.text}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+              {(() => {
+                const blocks = inspection.editorial.accordions.map((block, index) => ({ block, index }))
+                const visible = blocks.filter(({ block }) => !block.hidden)
+                const scoredBlocks = visible.filter(({ block }) => block.group === 'scored')
+                const googleBlocks = visible.filter(({ block }) => block.group === 'google')
+                const diagnostics = visible.filter(({ block }) => block.group === 'diagnostic')
+                const quietDiagnostics = diagnostics.filter(
+                  ({ block, index }) => (block.scoreText === 'RAS' || block.scoreText === 'Non disponible') && !openAccordions[String(index)]
                 )
-              })}
-            </div>
-          </>
+                const shownDiagnostics = diagnostics.filter((entry) => !quietDiagnostics.includes(entry))
+                const renderBlock = ({ block, index }: (typeof blocks)[number]) => (
+                  <EditorialBlock
+                    key={block.title}
+                    block={block}
+                    index={index}
+                    open={!!openAccordions[String(index)]}
+                    onToggle={() => toggleAccordion(String(index))}
+                  />
+                )
+                const eeatExcluded = blocks.some(({ block }) => block.hidden && block.group === 'scored')
+
+                return (
+                  <>
+                    <section className="space-y-2.5">
+                      <div>
+                        <h3 className="text-base font-semibold text-foreground">Critères du score</h3>
+                        <p className="text-xs text-muted-foreground">
+                          Chaque critère rapporte des points sur 100.
+                          {eeatExcluded && ' Auteur, date et sources ne comptent que pour un article : le score est ramené sur 100 sans ce critère.'}
+                        </p>
+                      </div>
+                      {scoredBlocks.map(renderBlock)}
+                    </section>
+
+                    {googleBlocks.length > 0 && (
+                      <section className="space-y-2.5">
+                        <h3 className="text-base font-semibold text-foreground">Ce que montre Google</h3>
+                        {googleBlocks.map(renderBlock)}
+                      </section>
+                    )}
+
+                    {diagnostics.length > 0 && (
+                      <section className="space-y-2.5">
+                        <div>
+                          <h3 className="text-base font-semibold text-foreground">Recommandations hors score</h3>
+                          <p className="text-xs text-muted-foreground">Utiles au lecteur, sans effet sur la note.</p>
+                        </div>
+                        {shownDiagnostics.map(renderBlock)}
+                        {quietDiagnostics.length > 0 && (
+                          <p className="flex flex-wrap items-center gap-1.5 rounded-xl border border-shade-33 bg-shade-1e px-4 py-3 text-xs text-muted-foreground">
+                            <span className="font-semibold text-green-soft">Rien à signaler :</span>
+                            {quietDiagnostics.map(({ block, index }) => (
+                              <button
+                                key={block.title}
+                                type="button"
+                                onClick={() => toggleAccordion(String(index))}
+                                className="rounded-md border border-shade-44 px-2 py-0.5 hover:border-primary hover:text-foreground"
+                              >
+                                {block.title.replace(' (hors score)', '')}
+                                {block.scoreText === 'Non disponible' ? ' (non disponible)' : ''}
+                              </button>
+                            ))}
+                          </p>
+                        )}
+                      </section>
+                    )}
+                  </>
+                )
+              })()}
+            </>
         ) : (
           /* TAB 3: GEO (IA) */
           <>
             {/* Context Banner */}
-            <div className="flex items-center gap-3 rounded-xl border border-[#78350f] bg-[#451a03] p-3.5 text-xs sm:text-sm text-white">
-              <span className="flex size-7 items-center justify-center rounded-lg bg-[#92400e] text-primary shrink-0">
+            <div className="flex items-center gap-3 rounded-xl border border-line-orange bg-tint-orange p-3.5 text-xs sm:text-sm text-foreground">
+              <span className="flex size-7 items-center justify-center rounded-lg bg-chip-orange text-primary-ink shrink-0">
                 <Sparkles className="size-4" />
               </span>
               <p>
-                <span className="font-bold text-[#fde68a]">
+                <span className="font-bold text-amber-soft">
                   Analyse GEO (Generative Engine Optimization)
                 </span>{' '}
                 – Évaluation de la citabilité de votre contenu par les moteurs de réponse IA (AI Overviews, Perplexity, SearchGPT).
@@ -406,8 +452,8 @@ export function PageInspectionSheet() {
             </div>
 
             {/* Scores Block */}
-            <div className="rounded-2xl border border-[#3a3a3a] bg-[#1e1e1e] p-5">
-              <h3 className="text-base font-semibold text-white mb-3">Scores</h3>
+            <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
+              <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
               <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
                 <div className="md:col-span-5 flex flex-col items-center justify-center">
                   <SemiCircleGauge
@@ -415,12 +461,13 @@ export function PageInspectionSheet() {
                     size={150}
                     label={`Score GEO (IA)`}
                   />
+                  <CoverageNote coverage={inspection.geo.coverage} />
                 </div>
                 <div className="md:col-span-7 space-y-1.5">
                   {inspection.geo.categories.map((cat) => (
                     <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
                       <span className="text-muted-foreground w-40 truncate">{cat.name}</span>
-                      <div className="flex-1 mx-3 h-2 rounded-full bg-[#333333] overflow-hidden">
+                      <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
                         <div
                           className={`h-full rounded-full transition-all duration-700 ${
                             cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
@@ -428,7 +475,7 @@ export function PageInspectionSheet() {
                           style={{ width: `${cat.score}%` }}
                         />
                       </div>
-                      <span className="font-semibold text-white tabular-nums w-10 text-right">
+                      <span className="font-semibold text-foreground tabular-nums w-10 text-right">
                         {cat.score}%
                       </span>
                     </div>
@@ -438,22 +485,9 @@ export function PageInspectionSheet() {
             </div>
 
             {/* Points de blocage IA (To-Do GEO) */}
-            <div className="rounded-2xl border border-[#6b5809] bg-[#221f11] p-4 text-sm">
-              <h4 className="font-semibold text-white mb-2">Points de blocage IA (To-Do GEO)</h4>
-              <div className="space-y-1.5 text-xs sm:text-sm">
-                {inspection.geo.priorities.map((item, idx) => (
-                  <div key={idx} className="flex items-start gap-2">
-                    <span
-                      className={`font-bold ${
-                        item.type === 'alert' ? 'text-[#ef4444]' : 'text-[#f5e400]'
-                      }`}
-                    >
-                      {item.type === 'alert' ? 'Alerte :' : 'Optimisation :'}
-                    </span>
-                    <span className="text-foreground">{item.text}</span>
-                  </div>
-                ))}
-              </div>
+            <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
+              <h4 className="font-semibold text-foreground mb-2">Points de blocage IA (To-Do GEO)</h4>
+              <PriorityList items={inspection.geo.priorities} onGo={goToSection} />
             </div>
 
             {/* Accordéons GEO */}
@@ -461,11 +495,11 @@ export function PageInspectionSheet() {
               {inspection.geo.accordions.map((acc, index) => {
                 const isOpen = !!openAccordions[String(index)]
                 return (
-                  <div key={acc.title} className="rounded-xl border border-[#333333] bg-[#1e1e1e] overflow-hidden">
+                  <div key={acc.title} id={`inspection-acc-${index}`} className="rounded-xl border border-shade-33 bg-shade-1e overflow-hidden">
                     <button
                       type="button"
                       onClick={() => toggleAccordion(String(index))}
-                      className="flex w-full items-center justify-between p-4 text-left font-semibold text-white hover:bg-[#252525] transition-colors"
+                      className="flex w-full items-center justify-between p-4 text-left font-semibold text-foreground hover:bg-shade-25 transition-colors"
                     >
                       <span>
                         {acc.title} ({acc.scoreText})
@@ -478,36 +512,18 @@ export function PageInspectionSheet() {
                     </button>
 
                     {isOpen && (
-                      <div className="border-t border-[#333333] p-4 space-y-3 text-xs sm:text-sm bg-[#191919]">
+                      <div className="border-t border-shade-33 p-4 space-y-3 text-xs sm:text-sm bg-shade-19">
                         {/* Chain of Thought Box */}
-                        <div className="rounded-lg border border-[#78350f]/50 bg-[#451a03]/40 p-3 text-xs italic text-[#fed7aa] leading-relaxed flex items-start gap-2.5">
-                          <Bot className="size-4 shrink-0 text-[#f59e0b] mt-0.5" />
+                        <div className="rounded-lg border border-line-orange/50 bg-tint-orange/40 p-3 text-xs italic text-orange-soft leading-relaxed flex items-start gap-2.5">
+                          <Bot className="size-4 shrink-0 text-orange-ink mt-0.5" />
                           <span>{acc.aiReasoning}</span>
                         </div>
 
                         <div className="space-y-2 pt-1">
                           {acc.items.map((item, i) => (
-                            <div key={i} className="flex items-start gap-2.5">
-                              {item.status === 'valid' ? (
-                                <CheckCircle2 className="size-4 shrink-0 text-[#12b10f] mt-0.5" />
-                              ) : item.status === 'warning' ? (
-                                <AlertTriangle className="size-4 shrink-0 text-[#eab308] mt-0.5" />
-                              ) : (
-                                <XCircle className="size-4 shrink-0 text-[#ef4444] mt-0.5" />
-                              )}
-                              <span
-                                className={
-                                  item.status === 'valid'
-                                    ? 'text-foreground'
-                                    : item.status === 'warning'
-                                    ? 'text-yellow-200/90'
-                                    : 'text-red-200/90'
-                                }
-                              >
-                                {item.text}
-                              </span>
-                            </div>
+                            <InspectionItemRow key={i} item={item} />
                           ))}
+                            {acc.schemaSnippet && <SchemaSnippetBlock snippet={acc.schemaSnippet} />}
                         </div>
                       </div>
                     )}

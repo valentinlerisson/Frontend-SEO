@@ -26,6 +26,12 @@ export class GlobalScoringEngine {
       editorialScore?: number;
       geoScore?: number;
       isPillar: boolean;
+      /** Page volontairement non indexable (noindex, sans erreur HTTP) : exclue de la moyenne technique */
+      excludedFromTechAverage?: boolean;
+      /** Points réellement mesurés sur 100 pour chaque pilier (100 par défaut) : poids de la page dans la moyenne */
+      techMeasured?: number;
+      editorialMeasured?: number;
+      geoMeasured?: number;
     }>
   ): {
     overallScore: number;
@@ -37,8 +43,15 @@ export class GlobalScoringEngine {
       return { overallScore: 0, techAvg: 0, editorialAvg: 0, geoAvg: 0 };
     }
 
-    const totalTech = pages.reduce((acc, p) => acc + p.techScore, 0);
-    const techAvg = Math.round(totalTech / pages.length);
+    // Une page en noindex volontaire (mentions légales, remerciement) ne doit pas tirer la moyenne vers le bas ;
+    // les pages en erreur 4xx/5xx restent comptées
+    const techPages = pages.some((p) => !p.excludedFromTechAverage) ? pages.filter((p) => !p.excludedFromTechAverage) : pages;
+    // Moyenne pondérée par les points mesurés : une page notée sur 65 points pèse moins qu'une page notée sur 100
+    const weighted = <T>(items: T[], score: (item: T) => number, weight: (item: T) => number | undefined) => {
+      const totalWeight = items.reduce((acc, item) => acc + Math.max(1, weight(item) ?? 100), 0);
+      return Math.round(items.reduce((acc, item) => acc + score(item) * Math.max(1, weight(item) ?? 100), 0) / totalWeight);
+    };
+    const techAvg = weighted(techPages, (p) => p.techScore, (p) => p.techMeasured);
 
     const pillarPages = pages.filter((p) => p.isPillar);
     const evaluatedEdito = pillarPages.filter((p) => p.editorialScore !== undefined);
@@ -46,13 +59,11 @@ export class GlobalScoringEngine {
 
     const editorialAvg =
       evaluatedEdito.length > 0
-        ? Math.round(evaluatedEdito.reduce((acc, p) => acc + (p.editorialScore ?? 0), 0) / evaluatedEdito.length)
+        ? weighted(evaluatedEdito, (p) => p.editorialScore ?? 0, (p) => p.editorialMeasured)
         : techAvg;
 
     const geoAvg =
-      evaluatedGeo.length > 0
-        ? Math.round(evaluatedGeo.reduce((acc, p) => acc + (p.geoScore ?? 0), 0) / evaluatedGeo.length)
-        : techAvg;
+      evaluatedGeo.length > 0 ? weighted(evaluatedGeo, (p) => p.geoScore ?? 0, (p) => p.geoMeasured) : techAvg;
 
     const overallScore = Math.round(0.4 * techAvg + 0.35 * editorialAvg + 0.25 * geoAvg);
 

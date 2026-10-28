@@ -1,20 +1,28 @@
 'use client'
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { ProjectAuditData, bigHappyAuditData, InspectionData, getInspectionDataForPage } from '@/lib/audit-data'
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
+import { ProjectAuditData, InspectionData } from '@/lib/audit-data'
+
+export type AuditViewState = 'IDLE' | 'LOADING' | 'ERROR' | 'SUCCESS'
 
 type AuditContextType = {
   projectId: string
-  audit: ProjectAuditData
+  state: AuditViewState
+  audit: ProjectAuditData | null
   auditDbId: string | null
+  progress: number
   loading: boolean
   error: string | null
   refreshAudit: () => Promise<void>
-  savePillars: (pillarIds: string[]) => Promise<boolean>
-  getInspection: (pageId: string) => InspectionData
+  /** `targetQueries` : requêtes cibles saisies par l'utilisateur, par identifiant de page */
+  savePillars: (pillarIds: string[], targetQueries?: Record<string, string>) => Promise<boolean>
+  getInspection: (pageId: string) => InspectionData | null
 }
 
 const AuditContext = createContext<AuditContextType | null>(null)
+
+const POLL_INTERVAL_MS = 3000
+const IN_PROGRESS_STATUSES = ['QUEUED', 'CRAWLING_TECH', 'ANALYZING_AI']
 
 export function AuditProvider({
   projectId,
@@ -23,39 +31,76 @@ export function AuditProvider({
   projectId: string
   children: React.ReactNode
 }) {
-  const [audit, setAudit] = useState<ProjectAuditData>(bigHappyAuditData)
+  const [state, setState] = useState<AuditViewState>('LOADING')
+  const [audit, setAudit] = useState<ProjectAuditData | null>(null)
   const [auditDbId, setAuditDbId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const hasLoadedOnce = useRef(false)
 
   const fetchAuditData = useCallback(async () => {
     try {
-      setLoading(true)
-      const res = await fetch(`/api/projects/${projectId}/audit`)
+      // Affiche le skeleton uniquement au premier chargement, pas pendant le polling
+      if (!hasLoadedOnce.current) setState('LOADING')
+      const res = await fetch(`/api/projects/${projectId}/audit`, { cache: 'no-store' })
+
+      if (res.status === 404) {
+        setAudit(null)
+        setAuditDbId(null)
+        setError(null)
+        setState('IDLE')
+        return
+      }
+
+      const data = await res.json().catch(() => null)
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
+        throw new Error(data?.error || `HTTP ${res.status}`)
       }
-      const data = await res.json()
-      if (data.audit) {
-        setAudit(data.audit)
-        if (data.auditDbId) {
-          setAuditDbId(data.auditDbId)
-        }
+
+      if (!data?.audit) {
+        setAudit(null)
+        setState('IDLE')
+        return
       }
+
+      hasLoadedOnce.current = true
+      setAuditDbId(data.auditDbId ?? null)
+      setProgress(typeof data.progress === 'number' ? data.progress : 0)
+
+      if (data.status === 'FAILED') {
+        setAudit(null)
+        setError(data.errorMessage || 'L’audit a échoué.')
+        setState('ERROR')
+        return
+      }
+
+      setAudit(data.audit)
       setError(null)
+      setState(IN_PROGRESS_STATUSES.includes(data.status) ? 'LOADING' : 'SUCCESS')
     } catch (err: any) {
-      console.warn('Erreur chargement audit API, maintien des données courantes', err)
-      setError(err?.message || 'Erreur chargement')
-    } finally {
-      setLoading(false)
+      console.error('Erreur chargement audit API', err)
+      setAudit(null)
+      setError(err?.message || 'Erreur de chargement de l’audit')
+      setState('ERROR')
     }
   }, [projectId])
 
   useEffect(() => {
+    hasLoadedOnce.current = false
     fetchAuditData()
   }, [fetchAuditData])
 
-  const savePillars = async (pillarIds: string[]): Promise<boolean> => {
+  // Polling tant que le crawl/l'analyse est en cours
+  useEffect(() => {
+    if (state !== 'LOADING' || !hasLoadedOnce.current) return
+    const timer = setInterval(fetchAuditData, POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [state, fetchAuditData])
+
+  const savePillars = async (
+    pillarIds: string[],
+    targetQueries: Record<string, string> = {},
+  ): Promise<boolean> => {
     if (!auditDbId) {
       console.warn('auditDbId non disponible pour sauvegarder les piliers')
       return false
@@ -65,7 +110,7 @@ export function AuditProvider({
       const res = await fetch(`/api/audits/${auditDbId}/pillars`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pillarPageIds: pillarIds }),
+        body: JSON.stringify({ pillarPageIds: pillarIds, targetQueries }),
       })
 
       if (res.ok) {
@@ -80,20 +125,19 @@ export function AuditProvider({
     }
   }
 
-  const getInspection = (pageId: string): InspectionData => {
-    if (audit.inspections && audit.inspections[pageId]) {
-      return audit.inspections[pageId]
-    }
-    return getInspectionDataForPage(pageId)
+  const getInspection = (pageId: string): InspectionData | null => {
+    return audit?.inspections?.[pageId] ?? null
   }
 
   return (
     <AuditContext.Provider
       value={{
         projectId,
+        state,
         audit,
         auditDbId,
-        loading,
+        progress,
+        loading: state === 'LOADING',
         error,
         refreshAudit: fetchAuditData,
         savePillars,
@@ -108,17 +152,7 @@ export function AuditProvider({
 export function useAudit() {
   const ctx = useContext(AuditContext)
   if (!ctx) {
-    // Fallback gracieux si utilisé hors provider
-    return {
-      projectId: 'big-happy',
-      audit: bigHappyAuditData,
-      auditDbId: null,
-      loading: false,
-      error: null,
-      refreshAudit: async () => {},
-      savePillars: async () => false,
-      getInspection: getInspectionDataForPage,
-    }
+    throw new Error('useAudit must be used within an AuditProvider')
   }
   return ctx
 }

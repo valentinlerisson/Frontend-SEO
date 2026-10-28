@@ -21,44 +21,10 @@ export type Project = {
 export const currentUser = { firstName: 'Valentin' }
 
 export const initialStats = {
-  activeProjects: 42,
-  auditsThisMonth: 128,
+  activeProjects: 0,
 }
 
 export const emptyScores: AuditScores = { tech: null, edito: null, geo: null }
-
-function completed(
-  id: string,
-  name: string,
-  domain: string,
-  scores: AuditScores,
-  lastAuditMinutesAgo: number,
-): Project {
-  return { id, name, domain, status: 'completed', progress: 100, scores, lastAuditMinutesAgo }
-}
-
-export const initialProjects: Project[] = [
-  {
-    id: 'interbio',
-    name: 'InterBIO',
-    domain: 'interbio.fr',
-    status: 'crawling',
-    progress: 45,
-    scores: emptyScores,
-    lastAuditMinutesAgo: 0,
-  },
-  completed('tariquet', 'Tariquet', 'tariquet.fr', { tech: 56, edito: null, geo: null }, 15),
-  completed('big-happy', 'Big Happy', 'big-happy.fr', { tech: 82, edito: 82, geo: 82 }, 120),
-  completed('maison-lafitte', 'Maison Lafitte', 'maison-lafitte.fr', { tech: 74, edito: 68, geo: 51 }, 300),
-  completed('cave-du-sud', 'Cave du Sud', 'cavedusud.com', { tech: 63, edito: 71, geo: null }, 480),
-  completed('atelier-roux', 'Atelier Roux', 'atelier-roux.fr', { tech: 91, edito: 77, geo: 64 }, 1440),
-  completed('terre-et-mer', 'Terre & Mer', 'terre-et-mer.fr', { tech: 48, edito: 55, geo: 39 }, 2880),
-  completed('ecolo-shop', 'Ecolo Shop', 'ecolo-shop.com', { tech: 69, edito: null, geo: null }, 4320),
-  completed('bordeaux-tech', 'Bordeaux Tech', 'bordeaux-tech.io', { tech: 88, edito: 81, geo: 72 }, 5760),
-  completed('les-jardins', 'Les Jardins', 'lesjardins.fr', { tech: 59, edito: 62, geo: 47 }, 7200),
-  completed('pyrene-sport', 'Pyrène Sport', 'pyrene-sport.fr', { tech: 77, edito: 70, geo: null }, 8640),
-  completed('oceane-voyages', 'Océane Voyages', 'oceane-voyages.com', { tech: 66, edito: 73, geo: 58 }, 10080),
-]
 
 /** Moyenne des scores disponibles, null si aucun n'est encore calculé. */
 export function globalScore(scores: AuditScores): number | null {
