@@ -16,6 +16,7 @@ import {
   PenTool,
   Settings,
   Target,
+  Link2,
   TriangleAlert,
   User,
   type LucideIcon,
@@ -253,6 +254,7 @@ function ProjectEntry({
     { label: 'Sous-pages', href: `${base}/subpages`, icon: BookOpen },
     { label: 'SEO éditorial', href: `${base}/seo-editorial`, icon: PenTool },
     { label: 'Positionnement', href: `${base}/positionnement`, icon: Target },
+    { label: 'Backlinks', href: `${base}/backlinks`, icon: Link2 },
     { label: 'GEO', href: `${base}/geo`, icon: Bot },
   ]
 

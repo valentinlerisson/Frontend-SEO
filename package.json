@@ -10,10 +10,12 @@
     "test:serp": "node --test scripts/serp/parse.test.mjs",
     "test:scoring": "npx --yes tsx --test tests/scoring.test.ts",
     "serp": "node scripts/serp/google-serp.mjs",
-    "variability": "npx --yes tsx scripts/llm-variability.ts"
+    "variability": "npx --yes tsx scripts/llm-variability.ts",
+    "backlinks:build": "npx --yes tsx scripts/backlinks/build-index.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
+    "@duckdb/node-api": "1.5.6-r.1",
     "@google/genai": "^2.31.0",
     "@prisma/client": "^6.4.0",
     "cheerio": "^1.2.0",

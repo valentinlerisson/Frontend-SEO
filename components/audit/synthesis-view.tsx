@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import type { ReactNode } from 'react'
-import { ArrowUpRight, Bot, Cpu, FileText, Globe2, Lock, Sparkles } from 'lucide-react'
+import { ArrowUpRight, Bot, Cpu, FileText, Globe2, Link2, Lock, Sparkles } from 'lucide-react'
 import { CircularGauge } from './score-gauges'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
@@ -11,6 +11,8 @@ import { AuditStateGate, PhaseLockBanner } from './audit-state-gate'
 import { ImpactBadge } from './impact-badge'
 import { pickPriorities } from '@/lib/issue-impact'
 import { scoreTone } from '@/lib/score-tone'
+import { backlinkSummary, releaseLabel } from '@/lib/backlink-labels'
+import type { BacklinkReport } from '@/core/domain/types'
 
 
 export function SynthesisView({ projectId }: { projectId: string }) {
@@ -121,6 +123,8 @@ export function SynthesisView({ projectId }: { projectId: string }) {
         />
       </section>
 
+      <PopularityCard projectId={projectId} report={audit.backlinks} />
+
       {/* Priorités et conseil */}
       <section
         aria-label="Priorités et conseil"
@@ -205,12 +209,75 @@ export function SynthesisView({ projectId }: { projectId: string }) {
       </section>
 
       <p className="text-xs text-muted-foreground">
-        Ce que cet outil ne mesure pas : les liens reçus d’autres sites, vos positions réelles dans Google et la
-        force de vos concurrents. Un bon score améliore votre site, il ne garantit pas une place en première page.
+        Hors du score : les liens reçus d’autres sites (relevé partiel, à titre indicatif), vos positions dans Google
+        (mesurées à la demande dans Positionnement) et la force de vos concurrents. Un bon score améliore votre site,
+        il ne garantit pas une place en première page.
       </p>
 
       <PageInspectionSheet />
     </div>
+  )
+}
+
+/** Popularité du site (hors score) : domaines référents relevés pendant le crawl, et évolution depuis l'audit précédent */
+function PopularityCard({ projectId, report }: { projectId: string; report?: BacklinkReport }) {
+  const summary = report?.status === 'DONE' ? backlinkSummary(report) : undefined
+  return (
+    <section aria-label="Popularité du site" className="glass-card rounded-2xl border p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-bold text-foreground">
+            <Link2 className="size-4 text-muted-foreground" aria-hidden="true" />
+            Popularité du site
+            <span className="rounded-full border border-shade-44 px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
+              Hors score
+            </span>
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {summary
+              ? `Sites qui font un lien vers le vôtre, d’après l’exploration Common Crawl de ${releaseLabel(report?.release)}. Relevé partiel : les vrais totaux sont plus élevés.`
+              : report
+                ? report.message ?? 'Backlinks indisponibles pour cet audit.'
+                : 'Audit lancé avant l’ajout des backlinks : relancez un audit pour les obtenir.'}
+          </p>
+        </div>
+        <Link
+          href={`/projets/${projectId}/backlinks`}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-primary-ink hover:underline"
+        >
+          Voir les backlinks
+          <ArrowUpRight className="size-3.5" aria-hidden="true" />
+        </Link>
+      </div>
+      {summary && report && (
+        <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-inset p-3">
+            <dt className="text-xs text-muted-foreground">Domaines référents</dt>
+            <dd className="text-2xl font-extrabold text-foreground">{summary.domains}</dd>
+          </div>
+          <div className="rounded-xl bg-inset p-3">
+            <dt className="text-xs text-muted-foreground">Liens vérifiés</dt>
+            <dd className="text-2xl font-extrabold text-foreground">
+              {summary.found} <span className="text-sm font-normal text-muted-foreground">sur {summary.verified} domaines lus</span>
+            </dd>
+          </div>
+          <div className="rounded-xl bg-inset p-3">
+            <dt className="text-xs text-muted-foreground">Depuis l’audit précédent</dt>
+            {report.changes ? (
+              <dd className="text-2xl font-extrabold text-foreground">
+                <span className="text-green-soft">+{report.changes.added.length}</span>{' '}
+                <span className="text-sky-soft">−{report.changes.lost.length}</span>
+                <span className="block text-xs font-normal text-muted-foreground">
+                  domaines gagnés et perdus depuis le {new Date(report.changes.previousDate).toLocaleDateString('fr-FR')}
+                </span>
+              </dd>
+            ) : (
+              <dd className="text-sm text-muted-foreground">Premier relevé : l’évolution s’affichera au prochain audit.</dd>
+            )}
+          </div>
+        </dl>
+      )}
+    </section>
   )
 }
 

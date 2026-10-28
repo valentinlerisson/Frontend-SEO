@@ -42,6 +42,8 @@ model Audit {
   crawlStartedAt   DateTime?
   completedAt      DateTime?
   errorMessage     String?
+  /// Backlinks relevés pendant le crawl (graphe Common Crawl + vérification), JSON BacklinkReport
+  backlinksRaw     String?
 
   pages            Page[]
   issues           Issue[]

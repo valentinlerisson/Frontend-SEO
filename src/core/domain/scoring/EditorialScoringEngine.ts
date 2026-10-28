@@ -281,8 +281,11 @@ export class EditorialScoringEngine {
       serp && serp.status === 'DONE' && search && isSameQuery(search.targetQuery.query, serp.query) ? serp : undefined;
 
     let cannibalizationRisk = evaluation.cannibalizationRisk;
+    // Requête de marque : repérée par le code à l'analyse (marque dans la requête, page de contact ou utilitaire) ;
+    // analyses antérieures sans ce repère : règle par le rôle et l'intention
     const brandQuery =
-      role === 'contact' || role === 'brand' || role === 'utility' || search?.targetQuery.intent === 'NAVIGATIONAL';
+      search?.targetQuery.isBrand ??
+      (role === 'contact' || role === 'brand' || role === 'utility' || search?.targetQuery.intent === 'NAVIGATIONAL');
     if (measuredSerp && !brandQuery) {
       // Pages du site présentes dans les résultats, autres que celle-ci
       const key = (url: string) => url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, '');

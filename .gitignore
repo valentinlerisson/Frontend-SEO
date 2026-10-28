@@ -28,3 +28,6 @@ graphify-out/
 .serp-profile/
 .cache/
 debug/
+
+# Backlinks : base locale du graphe Common Crawl (≈ 7 Go)
+.data/

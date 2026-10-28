@@ -12,6 +12,15 @@ import { TechScoringEngine } from '@/core/domain/scoring/TechScoringEngine';
 import { GlobalScoringEngine } from '@/core/domain/scoring/GlobalScoringEngine';
 import { evaluateCitability, scoreCitability } from '@/core/domain/scoring/citability';
 import { measureHotZones } from '@/core/domain/scoring/hot-zones';
+import {
+  betterMeasuredTarget,
+  chooseTargetQuery,
+  containsBrand,
+  sanitizeCandidates,
+  serpQueriesFor
+} from '@/core/domain/scoring/query-candidates';
+import { brandVariants } from '@/core/domain/scoring/autocomplete-relevance';
+import { compareReferringDomains } from '@/core/domain/backlinks';
 import type { EditorialEvaluation, NapSignals, RawPageData, SearchInsights, SerpResult } from '@/core/domain/types';
 
 const DOMAIN = 'exemple.fr';
@@ -386,4 +395,88 @@ test('Zones chaudes : le moteur remplace l’estimation de l’IA par la mesure'
   assert.equal(result.hotZonesOptimization.source, 'MEASURED');
   // « plombier lyon » : présent dans le Title et les 100 premiers mots, absent des H2/H3
   assert.equal(result.hotZonesOptimization.score, 11);
+});
+
+// ---------------------------------------------------------------- Requêtes candidates (sans la marque)
+
+test('Requêtes candidates : la marque, les rubriques et les doublons sont écartés', () => {
+  const brands = brandVariants('big-happy.fr');
+  const kept = sanitizeCandidates(
+    [
+      { query: 'Big Happy agence', intent: 'NAVIGATIONAL' },
+      { query: 'bighappy avis', intent: 'NAVIGATIONAL' },
+      { query: 'Agence marketing Toulouse', intent: 'COMMERCIAL' },
+      { query: 'agences marketing toulouse', intent: 'COMMERCIAL' },
+      { query: 'actualités', intent: 'INFORMATIONAL' },
+      { query: 'agence data', intent: 'COMMERCIAL' }
+    ],
+    brands
+  );
+  assert.deepEqual(
+    kept.map((candidate) => candidate.query),
+    ['agence marketing toulouse', 'agence data']
+  );
+  assert.equal(containsBrand('groupe associatif edenis', brandVariants('edenis.fr')), true);
+  assert.equal(containsBrand('association ehpad toulouse', brandVariants('edenis.fr')), false);
+});
+
+test('Requêtes candidates : la cible est la première suggérée par Google, sinon la première de l’IA', () => {
+  const candidates = [
+    { query: 'agence data', intent: 'COMMERCIAL' as const, suggestedByGoogle: false },
+    { query: 'agence marketing toulouse', intent: 'COMMERCIAL' as const, suggestedByGoogle: true }
+  ];
+  assert.equal(chooseTargetQuery(candidates)?.query, 'agence marketing toulouse');
+  assert.equal(chooseTargetQuery(candidates.map((c) => ({ ...c, suggestedByGoogle: false })))?.query, 'agence data');
+  // 3 recherches au plus : la cible, puis les suggérées par Google
+  assert.deepEqual(
+    serpQueriesFor('agence data', [...candidates, { query: 'conseil data', intent: 'COMMERCIAL', suggestedByGoogle: false }, { query: 'agence seo', intent: 'COMMERCIAL', suggestedByGoogle: true }]),
+    ['agence data', 'agence marketing toulouse', 'agence seo']
+  );
+});
+
+test('Requêtes candidates : une cible non confirmée cède la place à une candidate où la page sort', () => {
+  const candidates = [
+    { query: 'agence data', intent: 'COMMERCIAL' as const, suggestedByGoogle: false },
+    { query: 'conseil data', intent: 'COMMERCIAL' as const, suggestedByGoogle: false }
+  ];
+  const absent = { ...serpWith([]), query: 'agence data toulouse', status: 'DONE' as const };
+  const found = { ...serpWith([AUDITED]), query: 'conseil data toulouse', status: 'DONE' as const };
+  assert.equal(betterMeasuredTarget(candidates[0], [absent, found], candidates), 'conseil data toulouse');
+  // Cible suggérée par Google : elle reste
+  assert.equal(betterMeasuredTarget({ ...candidates[0], suggestedByGoogle: true }, [absent, found], candidates), undefined);
+});
+
+test('Cannibalisation : une requête générique se mesure aussi sur une page institutionnelle', () => {
+  const { raw, evaluation } = evaluationWithQuery();
+  raw.roleOverride = 'brand';
+  evaluation.search!.targetQuery.isBrand = false;
+  const risk = EditorialScoringEngine.calculate(raw, evaluation, serpWith([AUDITED])).evaluation!.cannibalizationRisk;
+  assert.equal(risk.source, 'SERP');
+  evaluation.search!.targetQuery.isBrand = true;
+  const brandRisk = EditorialScoringEngine.calculate(raw, evaluation, serpWith([AUDITED])).evaluation!.cannibalizationRisk;
+  assert.equal(brandRisk.source, 'AI');
+});
+
+// ---------------------------------------------------------------- Backlinks
+
+test('Backlinks : domaines gagnés et perdus depuis l’audit précédent', () => {
+  const previous = {
+    status: 'DONE' as const,
+    source: 'COMMON_CRAWL' as const,
+    release: 'cc-main-2026-jul-aug-sep',
+    fetchedAt: '2026-10-01T00:00:00.000Z',
+    referringDomains: [
+      { domain: 'a.fr', hosts: 1 },
+      { domain: 'b.fr', hosts: 1 }
+    ]
+  };
+  const changes = compareReferringDomains(previous, [
+    { domain: 'b.fr', hosts: 1 },
+    { domain: 'c.fr', hosts: 2 }
+  ]);
+  assert.deepEqual(changes?.added, ['c.fr']);
+  assert.deepEqual(changes?.lost, ['a.fr']);
+  // Relevé précédent en échec ou absent : pas de comparaison
+  assert.equal(compareReferringDomains({ ...previous, status: 'UNAVAILABLE' }, []), undefined);
+  assert.equal(compareReferringDomains(null, []), undefined);
 });

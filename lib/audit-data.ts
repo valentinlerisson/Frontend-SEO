@@ -1,4 +1,11 @@
-import type { PageRole, SearchInsights, SerpAnalysis, SerpHistoryEntry } from '@/core/domain/types'
+import type {
+  BacklinkReport,
+  PageRole,
+  QueryCandidate,
+  SearchInsights,
+  SerpAnalysis,
+  SerpHistoryEntry,
+} from '@/core/domain/types'
 
 export type PillarPage = {
   id: string
@@ -60,6 +67,10 @@ export type SubpageItem = {
   techScore: number
   /** Analyse de la SERP de la requête de la page, si elle a été lancée (piliers ou non) */
   serp?: SerpAnalysis
+  /** Relevés du dernier lancement : requête cible puis requêtes candidates */
+  serpQueries?: SerpAnalysis[]
+  /** Requêtes génériques proposées par l'IA pour la page, vérifiées dans Google Autocomplete */
+  queryCandidates?: QueryCandidate[]
   /** Relevés de position précédents (conservés d'un audit à l'autre) */
   serpHistory?: SerpHistoryEntry[]
 }
@@ -300,4 +311,6 @@ export type ProjectAuditData = {
   subpages: SubpageItem[]
   globalIssues: GlobalIssue[]
   inspections: Record<string, InspectionData>
+  /** Backlinks relevés pendant le crawl (absents pour un audit antérieur à leur ajout) */
+  backlinks?: BacklinkReport
 }

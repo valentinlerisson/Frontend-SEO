@@ -61,6 +61,8 @@ export function EditorialSearchPanel({
   const [error, setError] = useState<string | null>(null)
 
   const search = editorial.search
+  const candidates = search?.candidates ?? []
+  const fromCandidates = candidates.length > 0 && !search?.targetQuery.isBrand
 
   const run = async (body: { targetQuery?: string | null; force?: boolean }) => {
     if (!auditDbId) return
@@ -100,14 +102,30 @@ export function EditorialSearchPanel({
               Requête visée{' '}
               {editorial.queryConfidence === 'MANUAL' || editorial.isForcedTarget
                 ? '(saisie par vous)'
-                : editorial.queryConfidence === 'CONFIRMED'
-                  ? '(déduite par l’IA, retrouvée dans Google)'
-                  : '(déduite par l’IA)'}
+                : fromCandidates
+                  ? editorial.queryConfidence === 'CONFIRMED'
+                    ? '(recherche générique proposée par l’IA, confirmée par Google)'
+                    : '(recherche générique proposée par l’IA)'
+                  : search?.targetQuery.isBrand
+                    ? '(requête de marque : page de contact ou utilitaire)'
+                    : editorial.queryConfidence === 'CONFIRMED'
+                      ? '(déduite par l’IA, retrouvée dans Google)'
+                      : '(déduite par l’IA)'}
               {editorial.queryKept && editorial.queryConfidence !== 'MANUAL' && !editorial.isForcedTarget
                 ? ' · conservée d’une analyse à l’autre'
                 : ''}
             </p>
             <p className="text-base font-semibold text-foreground">« {editorial.targetKeyword} »</p>
+            {candidates.length > 1 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Autres recherches proposées, sans le nom de la marque :{' '}
+                {candidates
+                  .filter((candidate) => candidate.query !== editorial.targetKeyword)
+                  .map((candidate) => `« ${candidate.query} »${candidate.suggestedByGoogle ? ' (suggérée par Google)' : ''}`)
+                  .join(', ')}
+                . Leur position se mesure dans l’onglet Positionnement.
+              </p>
+            )}
             {editorial.queryConfidence === 'INFERRED' && (
               <p className="mt-1 text-xs text-amber-soft">
                 Confiance faible : cette requête vient de la page elle-même et n’a pas été retrouvée dans Google.

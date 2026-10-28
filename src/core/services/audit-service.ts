@@ -11,6 +11,10 @@ import { GeoScoringEngine, geoMeasuredPoints } from '../domain/scoring/GeoScorin
 import { GlobalScoringEngine } from '../domain/scoring/GlobalScoringEngine';
 import { napMeasuredPoints, analyzeNap } from '../domain/scoring/nap';
 import { PageSpeedInsights } from '@/adapters/secondary/speed/pagespeed';
+import { CommonCrawlBacklinkIndex } from '@/adapters/secondary/backlinks/common-crawl-index';
+import { verifyReferringDomains } from '@/adapters/secondary/backlinks/backlink-verifier';
+import type { BacklinkIndexPort } from '../ports/backlink-index';
+import { compareReferringDomains } from '../domain/backlinks';
 import { createSerpProvider } from '@/adapters/secondary/serp/create-serp-provider';
 import { SerpBlockedError, type SerpProviderPort } from '../ports/serp-provider';
 import { buildSerpAnalysis } from '../domain/scoring/serp-analysis';
@@ -25,11 +29,20 @@ import {
 } from '../domain/scoring/autocomplete-relevance';
 import { buildSiteCoherenceIssues, DETERMINISTIC_SITE_CODES } from '../domain/scoring/site-coherence';
 import {
+  betterMeasuredTarget,
+  chooseTargetQuery,
+  containsBrand,
+  sanitizeCandidates,
+  serpQueriesFor
+} from '../domain/scoring/query-candidates';
+import {
+  BacklinkReport,
   EditorialEvaluation,
   GeoEvaluation,
   Issue,
   EditorialSignals,
   PageRole,
+  QueryCandidate,
   RawPageData,
   RoleSignals,
   SerpAnalysis,
@@ -50,7 +63,7 @@ type ContentSnapshot = {
 };
 
 /** Requête cible d'une page lors de l'audit précédent, reprise au suivant */
-type PreviousQuery = { query: string; manual: boolean; basisHash: string };
+type PreviousQuery = { query: string; manual: boolean; basisHash: string; candidates?: QueryCandidate[] };
 
 export class AuditService {
   /** Pages explorées au plus (liens puis pages du sitemap non reliées) ; variable CRAWL_MAX_PAGES */
@@ -142,6 +155,7 @@ export class AuditService {
     // 1. Trouver ou créer le projet
     const serpHistoryByUrl = new Map<string, SerpHistoryEntry[]>();
     const previousQueries = new Map<string, PreviousQuery>();
+    let previousBacklinks: BacklinkReport | null = null;
     let project = await prisma.project.findUnique({
       where: { domain }
     });
@@ -166,14 +180,25 @@ export class AuditService {
         const history = this.parseJson<{ serpHistory?: SerpHistoryEntry[] }>(previous.aiEvaluationRaw)?.serpHistory;
         if (history?.length) serpHistoryByUrl.set(key, history);
         if (previous.targetQuery) {
-          const headings = this.parseJson<{ content?: ContentSnapshot }>(previous.metricsRaw)?.content?.headings ?? [];
+          const previousMetrics = this.parseJson<{ content?: ContentSnapshot; keptCandidates?: QueryCandidate[] }>(
+            previous.metricsRaw
+          );
           previousQueries.set(key, {
             query: previous.targetQuery,
             manual: previous.targetQuerySource === 'MANUAL',
-            basisHash: this.queryBasisHash(previous.title, previous.h1, headings)
+            basisHash: this.queryBasisHash(previous.title, previous.h1, previousMetrics?.content?.headings ?? []),
+            candidates: previousMetrics?.keptCandidates
           });
         }
       }
+
+      // Backlinks de l'audit précédent : comparés au nouveau relevé (domaines gagnés et perdus)
+      const previousAudit = await prisma.audit.findFirst({
+        where: { projectId: project.id, backlinksRaw: { not: null } },
+        orderBy: { createdAt: 'desc' },
+        select: { backlinksRaw: true }
+      });
+      previousBacklinks = this.parseJson<BacklinkReport>(previousAudit?.backlinksRaw);
 
       // INVARIANT ZÉRO-HISTORIQUE : Supprimer l'audit précédent (cascade Prisma)
       await prisma.audit.deleteMany({
@@ -192,7 +217,7 @@ export class AuditService {
     });
 
     // 3. Exécuter le crawl et le calcul des scores (en arrière-plan asynchrone)
-    this.runCrawlPipeline(audit.id, url, serpHistoryByUrl, previousQueries).catch((err) => {
+    this.runCrawlPipeline(audit.id, url, serpHistoryByUrl, previousQueries, previousBacklinks).catch((err) => {
       console.error('Erreur crawl pipeline:', err);
       prisma.audit.update({
         where: { id: audit.id },
@@ -264,8 +289,12 @@ export class AuditService {
     auditId: string,
     originUrl: string,
     serpHistoryByUrl: Map<string, SerpHistoryEntry[]> = new Map(),
-    previousQueries: Map<string, PreviousQuery> = new Map()
+    previousQueries: Map<string, PreviousQuery> = new Map(),
+    previousBacklinks: BacklinkReport | null = null
   ) {
+    // Backlinks en parallèle du crawl : graphe Common Crawl (moins d'une seconde) puis vérification en direct
+    const backlinks = this.collectBacklinks(new URL(originUrl).hostname, previousBacklinks);
+
     // Étape A : Métadonnées du domaine (robots.txt, llms.txt)
     const domainMeta = await SiteCrawler.analyzeDomainMetadata(originUrl);
 
@@ -331,11 +360,10 @@ export class AuditService {
       const contentHash = this.hashContent(page, snapshot);
       // Requête saisie : toujours reprise. Requête déduite : reprise si Title, H1 et sous-titres n'ont pas changé
       const previousQuery = previousQueries.get(SiteCrawler.urlKey(page.url));
-      const keptQuery =
-        previousQuery &&
-        (previousQuery.manual || previousQuery.basisHash === this.queryBasisHash(page.title, page.h1, snapshot.headings))
-          ? previousQuery
-          : undefined;
+      const sameBasis = previousQuery?.basisHash === this.queryBasisHash(page.title, page.h1, snapshot.headings);
+      const keptQuery = previousQuery && (previousQuery.manual || sameBasis) ? previousQuery : undefined;
+      // Requêtes candidates reprises tant que Title, H1 et sous-titres n'ont pas changé
+      const keptCandidates = sameBasis && previousQuery?.candidates?.length ? previousQuery.candidates : undefined;
 
       // Sauvegarder la Page
       const createdPage = await prisma.page.create({
@@ -362,6 +390,7 @@ export class AuditService {
           ...(keptQuery ? { targetQuery: keptQuery.query, targetQuerySource: keptQuery.manual ? 'MANUAL' : 'AUTO' } : {}),
           metricsRaw: JSON.stringify({
             ...(keptQuery && !keptQuery.manual ? { keptQuery: keptQuery.query } : {}),
+            ...(keptCandidates ? { keptCandidates } : {}),
             content: snapshot,
             images: page.images
               .slice(0, this.MAX_LISTED_IMAGES)
@@ -445,9 +474,48 @@ export class AuditService {
         techScore: globalScores.techAvg,
         editorialScore: globalScores.editorialAvg,
         geoScore: globalScores.geoAvg,
-        overallScore: globalScores.overallScore
+        overallScore: globalScores.overallScore,
+        backlinksRaw: JSON.stringify(await backlinks)
       }
     });
+  }
+
+  /**
+   * Backlinks du site (hors score) : domaines référents du graphe Common Crawl préparé localement, puis vérification
+   * en direct des 20 premiers (page source, texte du lien, nofollow). Ne fait jamais échouer le crawl.
+   */
+  private static async collectBacklinks(
+    host: string,
+    previous: BacklinkReport | null,
+    index: BacklinkIndexPort = new CommonCrawlBacklinkIndex()
+  ): Promise<BacklinkReport> {
+    const domain = host.replace(/^www\./, '');
+    const base = { source: 'COMMON_CRAWL' as const, fetchedAt: new Date().toISOString(), referringDomains: [] };
+    if (!index.isAvailable()) {
+      return {
+        ...base,
+        status: 'UNAVAILABLE',
+        message: 'Base Common Crawl absente : lancez « npm run backlinks:build » (environ 8 Go à télécharger, 30 minutes).'
+      };
+    }
+    try {
+      const found = await index.referringDomains(domain);
+      if (!found) {
+        return { ...base, status: 'DONE', release: index.release(), domainInGraph: false, changes: compareReferringDomains(previous, []) };
+      }
+      const referringDomains = await verifyReferringDomains(found.domains, domain);
+      return {
+        ...base,
+        status: 'DONE',
+        release: found.release,
+        domainInGraph: true,
+        referringDomains,
+        changes: compareReferringDomains(previous, referringDomains)
+      };
+    } catch (err: any) {
+      console.error(`[AuditService] Backlinks indisponibles pour ${domain} : ${err?.message ?? err}`);
+      return { ...base, status: 'ERROR', message: String(err?.message ?? err).slice(0, 300) };
+    }
   }
 
   /**
@@ -594,8 +662,12 @@ export class AuditService {
           : {
               targetQuery: null,
               targetQuerySource: 'AUTO',
-              // Retour à la détection automatique : la requête déduite conservée est oubliée, l'IA en redéduit une
-              metricsRaw: JSON.stringify({ ...this.parseJson<Record<string, unknown>>(page.metricsRaw), keptQuery: undefined })
+              // Retour à la détection automatique : requête et candidates conservées oubliées, l'IA en propose d'autres
+              metricsRaw: JSON.stringify({
+                ...this.parseJson<Record<string, unknown>>(page.metricsRaw),
+                keptQuery: undefined,
+                keptCandidates: undefined
+              })
             }
       });
     }
@@ -625,7 +697,12 @@ export class AuditService {
       serp?: SerpAnalysis;
       editorialStatus?: { engine: string; error?: string };
     }>(page.aiEvaluationRaw);
-    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; keptQuery?: string }>(page.metricsRaw);
+    const metrics = this.parseJson<{
+      content?: ContentSnapshot;
+      roleOverride?: PageRole;
+      keptQuery?: string;
+      keptCandidates?: QueryCandidate[];
+    }>(page.metricsRaw);
     const snapshot: ContentSnapshot = metrics?.content ?? {
       headings: [],
       excerpt: '',
@@ -637,21 +714,6 @@ export class AuditService {
 
     const manualQuery =
       page.targetQuerySource === 'MANUAL' && page.targetQuery ? page.targetQuery : undefined;
-    // Version du prompt et modèle dans la clé : un changement de barème ou de modèle relance l'analyse
-    // Requête déduite conservée (analyse précédente sur le même contenu) : l'IA ne la redéduit pas
-    const fixedQuery = manualQuery ? undefined : metrics?.keptQuery;
-    const analyzedHash = this.sha256(
-      `${page.contentHash ?? ''}|${manualQuery ?? ''}|${fixedQuery ?? ''}|${llmGateway.cacheKey()}`
-    );
-
-    if (
-      !options.force &&
-      page.analyzedHash === analyzedHash &&
-      stored?.editorial?.search?.analyzedBy.engine === 'LLM'
-    ) {
-      return;
-    }
-
     const raw = this.toRawPage(page, snapshot, metrics?.roleOverride);
     // Rôle de départ, transmis à l'IA qui peut le corriger ; une correction manuelle prime sur tout
     const role = resolvePageRole({
@@ -666,6 +728,31 @@ export class AuditService {
       })
     }).role;
 
+    // Requêtes génériques (sans la marque) pour toutes les pages, sauf contact et pages utilitaires : on y cherche
+    // le site par son nom, l'IA déduit alors une requête de marque comme avant
+    const brands = brandVariants(domain);
+    const genericQueries = role !== 'contact' && role !== 'utility';
+    let candidates: QueryCandidate[] = metrics?.keptCandidates ?? [];
+    // Requête déduite conservée (analyse précédente sur le même contenu) : l'IA ne la redéduit pas. Une requête
+    // déduite avant les candidates (souvent la marque) n'est pas reprise : elle est remplacée par une candidate
+    const fixedQuery =
+      manualQuery || !metrics?.keptQuery
+        ? undefined
+        : !genericQueries || (candidates.length > 0 && !containsBrand(metrics.keptQuery, brands))
+          ? metrics.keptQuery
+          : undefined;
+    // Version du prompt et modèle dans la clé : un changement de barème ou de modèle relance l'analyse
+    const hashFor = (kept: string | undefined) =>
+      this.sha256(`${page.contentHash ?? ''}|${manualQuery ?? ''}|${kept ?? ''}|${llmGateway.cacheKey()}`);
+
+    if (
+      !options.force &&
+      page.analyzedHash === hashFor(fixedQuery) &&
+      stored?.editorial?.search?.analyzedBy.engine === 'LLM'
+    ) {
+      return;
+    }
+
     let evaluation: EditorialEvaluation | undefined;
     let error: string | undefined;
     const blocked = page.httpStatus >= 400 || !page.isIndexable;
@@ -675,7 +762,12 @@ export class AuditService {
         error = 'Aucun fournisseur IA configuré (LLM_BASE_URL + LLM_MODEL, ou GEMINI_API_KEY) : analyse heuristique locale utilisée.';
       } else {
         try {
-          const suggestions = await this.fetchSuggestionsFor(page, domain, manualQuery, role);
+          if (genericQueries && candidates.length === 0) {
+            candidates = await this.proposeCandidates(page, domain, role, snapshot, brands, pillars);
+          }
+          // Requête cible : la première candidate que Google suggère, sinon la première proposée par l'IA
+          const chosenQuery = manualQuery || fixedQuery ? undefined : chooseTargetQuery(candidates)?.query;
+          const suggestions = await this.fetchSuggestionsFor(page, domain, manualQuery ?? fixedQuery ?? chosenQuery, role);
           evaluation = await llmGateway.evaluateEditorial({
             url: page.url,
             domain,
@@ -694,6 +786,7 @@ export class AuditService {
             },
             manualQuery,
             fixedQuery,
+            chosenQuery,
             suggestions,
             siblingPages: pillars
               .filter((p) => p.id !== page.id)
@@ -706,12 +799,20 @@ export class AuditService {
       }
     }
 
-    // Requête déduite par l'IA : est-elle une vraie recherche ? Google Autocomplete interrogé sur la requête exacte
-    if (evaluation?.search && evaluation.search.targetQuery.source === 'AUTO') {
+    if (evaluation?.search) {
       const query = evaluation.search.targetQuery.query;
-      const already = evaluation.search.autocomplete.suggestions.some((suggestion) => isSameQuery(query, suggestion));
-      const exact = already ? [] : await GoogleAutocomplete.fetchExact(query);
-      evaluation.search.targetQuery.suggestedByGoogle = already || exact.some((suggestion) => isSameQuery(query, suggestion));
+      // Requête déduite par l'IA : est-elle une vraie recherche ? Vérifiée avec les candidates, sinon Google
+      // Autocomplete interrogé sur la requête exacte
+      if (evaluation.search.targetQuery.source === 'AUTO') {
+        const candidate = candidates.find((item) => normalizeText(item.query) === normalizeText(query));
+        const already =
+          candidate?.suggestedByGoogle === true ||
+          evaluation.search.autocomplete.suggestions.some((suggestion) => isSameQuery(query, suggestion));
+        const exact = already || candidate ? [] : await GoogleAutocomplete.fetchExact(query);
+        evaluation.search.targetQuery.suggestedByGoogle = already || exact.some((suggestion) => isSameQuery(query, suggestion));
+      }
+      evaluation.search.targetQuery.isBrand = !genericQueries || containsBrand(query, brands);
+      if (candidates.length > 0) evaluation.search.candidates = candidates;
     }
 
     const result = EditorialScoringEngine.calculate(raw, evaluation, stored?.serp);
@@ -780,11 +881,20 @@ export class AuditService {
         ),
         targetQuery: search?.targetQuery.query ?? page.targetQuery,
         targetQuerySource: search?.targetQuery.source ?? page.targetQuerySource ?? 'AUTO',
-        // Requête déduite conservée pour les analyses suivantes (re-test, changement de prompt, audit suivant)
-        ...(search?.targetQuery.source === 'AUTO'
-          ? { metricsRaw: JSON.stringify({ ...this.parseJson<Record<string, unknown>>(page.metricsRaw), keptQuery: search.targetQuery.query }) }
+        // Requête déduite et candidates conservées pour les analyses suivantes (re-test, changement de prompt, audit suivant)
+        ...(search?.targetQuery.source === 'AUTO' || candidates.length > 0
+          ? {
+              metricsRaw: JSON.stringify({
+                ...this.parseJson<Record<string, unknown>>(page.metricsRaw),
+                ...(search?.targetQuery.source === 'AUTO' ? { keptQuery: search.targetQuery.query } : {}),
+                ...(candidates.length > 0 ? { keptCandidates: candidates } : {})
+              })
+            }
           : {}),
-        analyzedHash: evaluation ? analyzedHash : null,
+        // Empreinte calculée avec la requête retenue : l'analyse suivante, qui la reprend, n'est pas relancée
+        analyzedHash: evaluation
+          ? hashFor(search?.targetQuery.source === 'AUTO' ? search.targetQuery.query : undefined)
+          : null,
         aiEvaluationRaw: JSON.stringify({
           ...stored,
           editorial: result.evaluation,
@@ -832,10 +942,10 @@ export class AuditService {
   private static async fetchSuggestionsFor(
     page: Page,
     domain: string,
-    manualQuery: string | undefined,
+    targetQuery: string | undefined,
     role: string
   ): Promise<string[]> {
-    if (!manualQuery && (role === 'contact' || role === 'brand' || role === 'utility')) return [];
+    if (!targetQuery && (role === 'contact' || role === 'brand' || role === 'utility')) return [];
 
     const brands = brandVariants(domain);
     const clean = (value: string) =>
@@ -852,14 +962,14 @@ export class AuditService {
     const candidates = Array.from(
       new Set(
         [
-          manualQuery?.trim().toLowerCase(),
+          targetQuery?.trim().toLowerCase(),
           page.targetQuerySource === 'AUTO' && page.targetQuery ? clean(page.targetQuery) : undefined,
           ...segments(page.title),
           ...segments(page.h1)
         ]
           .filter((seed): seed is string => Boolean(seed))
-          // Une requête saisie par l'utilisateur est toujours tentée ; les autres doivent être exploitables
-          .filter((seed, index) => (index === 0 && manualQuery) || isUsableSeed(seed))
+          // La requête cible (saisie, conservée ou choisie) est toujours tentée ; les autres doivent être exploitables
+          .filter((seed, index) => (index === 0 && Boolean(targetQuery)) || isUsableSeed(seed))
           .map((seed) => seed.split(' ').slice(0, 6).join(' '))
       )
     ).slice(0, 3);
@@ -869,6 +979,44 @@ export class AuditService {
       if (relevant.length >= 3) return relevant;
     }
     return [];
+  }
+
+  /**
+   * Requêtes candidates d'une page : proposées par l'IA, nettoyées par le code (marque, doublons, rubriques), puis
+   * vérifiées une à une dans Google Autocomplete. Échec de l'IA : liste vide, l'analyse déduit alors la requête.
+   */
+  private static async proposeCandidates(
+    page: Page,
+    domain: string,
+    role: PageRole,
+    snapshot: ContentSnapshot,
+    brands: string[],
+    pillars: Page[]
+  ): Promise<QueryCandidate[]> {
+    try {
+      const proposals = await llmGateway.proposeQueries({
+        url: page.url,
+        domain,
+        role,
+        title: page.title ?? undefined,
+        metaDescription: page.metaDescription ?? undefined,
+        h1: page.h1 ?? undefined,
+        headings: snapshot.headings,
+        excerpt: snapshot.excerpt,
+        siblingPages: pillars
+          .filter((p) => p.id !== page.id)
+          .map((p) => ({ url: p.url, title: p.title ?? undefined, h1: p.h1 ?? undefined }))
+      });
+      const candidates = sanitizeCandidates(proposals, brands);
+      for (const candidate of candidates) {
+        const suggestions = await GoogleAutocomplete.fetchExact(candidate.query);
+        candidate.suggestedByGoogle = suggestions.some((suggestion) => isSameQuery(candidate.query, suggestion));
+      }
+      return candidates;
+    } catch (err: any) {
+      console.warn(`[AuditService] Requêtes candidates indisponibles pour ${page.url} : ${err?.message ?? err}`);
+      return [];
+    }
   }
 
   /**
@@ -994,34 +1142,41 @@ export class AuditService {
     }
   }
 
-  /** Enregistre l'analyse SERP d'une page dans son JSON d'évaluation (sans toucher au reste) */
-  private static async saveSerp(page: Page, serp: SerpAnalysis | null) {
+  /**
+   * Enregistre les relevés Google d'une page dans son JSON d'évaluation (sans toucher au reste) : `serp` est le relevé
+   * de la requête cible (il sert au score), `queries` tous les relevés du lancement (requête cible et candidates).
+   */
+  private static async saveSerp(page: Page, serp: SerpAnalysis | null, queries?: SerpAnalysis[]) {
     const current = await prisma.page.findUnique({ where: { id: page.id }, select: { aiEvaluationRaw: true } });
     const stored = this.parseJson<Record<string, unknown>>(current?.aiEvaluationRaw) ?? {};
     if (serp) stored.serp = serp;
     else delete stored.serp;
-    // Historique des relevés terminés (position par date), pour suivre les progrès d'un audit à l'autre
-    if (serp?.status === 'DONE' && serp.fetchedAt) {
-      const history = Array.isArray(stored.serpHistory) ? (stored.serpHistory as SerpHistoryEntry[]) : [];
+    if (queries) stored.serpQueries = queries;
+    else if (!serp) delete stored.serpQueries;
+    // Historique des relevés terminés (position par date et par requête), pour suivre les progrès d'un audit à l'autre
+    const history = Array.isArray(stored.serpHistory) ? (stored.serpHistory as SerpHistoryEntry[]) : [];
+    for (const done of queries ?? (serp ? [serp] : [])) {
+      if (done.status !== 'DONE' || !done.fetchedAt) continue;
+      if (history.some((entry) => entry.date === done.fetchedAt && entry.query === done.query)) continue;
       history.push({
-        date: serp.fetchedAt,
-        query: serp.query,
-        provider: serp.provider ?? 'browser',
-        pagePosition: serp.pagePosition,
-        sitelinkOf: serp.pageSitelinkOf,
-        ownPosition: serp.ownPosition
+        date: done.fetchedAt,
+        query: done.query,
+        provider: done.provider ?? 'browser',
+        pagePosition: done.pagePosition,
+        sitelinkOf: done.pageSitelinkOf,
+        ownPosition: done.ownPosition
       });
-      stored.serpHistory = history.slice(-this.MAX_SERP_HISTORY);
     }
+    if (history.length > 0) stored.serpHistory = history.slice(-this.MAX_SERP_HISTORY);
     const updated = await prisma.page.update({ where: { id: page.id }, data: { aiEvaluationRaw: JSON.stringify(stored) } });
     // Une mesure Google remplace l'estimation de cannibalisation et confirme la requête cible
     if (serp?.status === 'DONE') await this.rescoreEditorial(updated);
   }
 
   /**
-   * Lance en arrière-plan l'analyse SERP de pages piliers : recherche Google de la requête cible (navigateur local),
-   * position du domaine, lecture des 3 premiers concurrents, écarts de sections, intention des résultats.
-   * Retourne `started: false` si une analyse est déjà en cours.
+   * Lance en arrière-plan l'analyse SERP de pages : recherche Google de la requête cible et des requêtes candidates
+   * (3 au plus par page), position du domaine, lecture des 3 premiers concurrents de la requête cible, écarts de
+   * sections, intention des résultats. Retourne `started: false` si une analyse est déjà en cours.
    */
   public static async startSerpAnalysis(
     auditId: string,
@@ -1058,32 +1213,16 @@ export class AuditService {
     );
 
     this.serpJobRunning = true;
-    // Requête déduite d'une page locale : la ville est ajoutée, sinon la position dépend du lieu de la machine.
-    // Une requête saisie par l'utilisateur est envoyée telle quelle.
-    const queryOf = (page: Page) => {
-      const query = (page.targetQuery || page.h1 || page.title || '').trim();
-      if (page.targetQuerySource === 'MANUAL') return query;
-      const city = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial?.search?.local;
-      if (!city?.isLocalBusiness || !city.city) return query;
-      return normalizeText(query).includes(normalizeText(city.city)) ? query : `${query} ${city.city}`;
-    };
     for (const page of pages) {
-      await this.saveSerp(page, {
-        status: 'RUNNING',
-        query: queryOf(page),
-        results: [],
-        ownPosition: null,
-        pagePosition: null,
-        pageSitelinkOf: null,
-        ownUrls: [],
-        competitors: [],
-        gaps: { missingSections: [], competitorAvgWords: null },
-        intent: { dominant: null, counts: {} },
-        snippetBenchmark: { avgTitleLength: null, avgSnippetLength: null }
-      });
+      const list = this.serpQueriesOf(page);
+      await this.saveSerp(
+        page,
+        this.emptySerp(list[0], 'RUNNING'),
+        list.map((query) => this.emptySerp(query, 'RUNNING'))
+      );
     }
 
-    this.runSerpJob(pages, audit.project.domain, queryOf, provider)
+    this.runSerpJob(pages, audit.project.domain, provider)
       .catch((err) => console.error('[AuditService] Analyse SERP interrompue :', err))
       .finally(() => {
         this.serpJobRunning = false;
@@ -1092,15 +1231,10 @@ export class AuditService {
     return { started: true, pages: pages.length };
   }
 
-  private static async runSerpJob(
-    pages: Page[],
-    domain: string,
-    queryOf: (page: Page) => string,
-    provider: SerpProviderPort
-  ) {
-    const empty = (query: string, status: SerpAnalysis['status'], message: string): SerpAnalysis => ({
+  private static emptySerp(query: string, status: SerpAnalysis['status'], message?: string): SerpAnalysis {
+    return {
       status,
-      message,
+      ...(message ? { message } : {}),
       query,
       results: [],
       ownPosition: null,
@@ -1111,76 +1245,155 @@ export class AuditService {
       gaps: { missingSections: [], competitorAvgWords: null },
       intent: { dominant: null, counts: {} },
       snippetBenchmark: { avgTitleLength: null, avgSnippetLength: null }
-    });
+    };
+  }
+
+  /**
+   * Requêtes mesurées pour une page : la requête cible d'abord, puis les candidates (suggérées par Google d'abord),
+   * 3 au plus. Une requête déduite d'une page locale reçoit la ville, sinon la position dépend du lieu de la machine ;
+   * une requête saisie par l'utilisateur est envoyée telle quelle.
+   */
+  private static serpQueriesOf(page: Page): string[] {
+    const editorial = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial;
+    const candidates =
+      editorial?.search?.candidates ??
+      this.parseJson<{ keptCandidates?: QueryCandidate[] }>(page.metricsRaw)?.keptCandidates ??
+      [];
+    const local = editorial?.search?.local;
+    const withCity = (query: string) =>
+      !local?.isLocalBusiness || !local.city || normalizeText(query).includes(normalizeText(local.city))
+        ? query
+        : `${query} ${local.city}`;
+    const target = (page.targetQuery || page.h1 || page.title || '').trim();
+    const first = page.targetQuerySource === 'MANUAL' ? target : withCity(target);
+    return serpQueriesFor(first, candidates).map((query, index) => (index === 0 ? query : withCity(query)));
+  }
+
+  private static async runSerpJob(pages: Page[], domain: string, provider: SerpProviderPort) {
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 4000 + Math.random() * 4000));
+    const rankOf = (serp: SerpAnalysis) => serp.pagePosition ?? serp.pageSitelinkOf ?? null;
+    let searches = 0;
 
     for (let index = 0; index < pages.length; index++) {
       const page = pages[index];
-      const query = queryOf(page);
-      try {
-        if (!query) throw new Error('Aucune requête cible pour cette page');
-        if (index > 0) await new Promise((resolve) => setTimeout(resolve, 4000 + Math.random() * 4000));
+      const queries = this.serpQueriesOf(page);
+      const metrics = this.parseJson<{ content?: ContentSnapshot }>(page.metricsRaw);
+      const ourText = `${(metrics?.content?.headings ?? []).map((h) => h.text).join(' ')} ${metrics?.content?.excerpt ?? ''}`;
+      const history = this.parseJson<{ serpHistory?: SerpHistoryEntry[] }>(page.aiEvaluationRaw)?.serpHistory ?? [];
+      const analyses: SerpAnalysis[] = queries.map((query) => this.emptySerp(query, 'RUNNING'));
 
-        const metrics = this.parseJson<{ content?: ContentSnapshot }>(page.metricsRaw);
-        const ourText = `${(metrics?.content?.headings ?? []).map((h) => h.text).join(' ')} ${metrics?.content?.excerpt ?? ''}`;
-        const brandQuery = brandVariants(domain).some((brand) => normalizeText(query).includes(brand));
-        const rankOf = (serp: SerpAnalysis) => serp.pagePosition ?? serp.pageSitelinkOf ?? null;
-        const pause = () => new Promise((resolve) => setTimeout(resolve, 4000 + Math.random() * 4000));
+      for (let q = 0; q < queries.length; q++) {
+        const query = queries[q];
+        try {
+          if (!query) throw new Error('Aucune requête cible pour cette page');
+          if (searches++ > 0) await pause();
+          const brandQuery = brandVariants(domain).some((brand) => normalizeText(query).includes(brand));
 
-        // Mesure : première page de Google ; si la page n'y est pas (hors requête de marque), pages 2 et 3, pour voir
-        // les positions 11 à 30, celles où un effort éditorial rapporte le plus
-        const measure = async (fresh: boolean) => {
-          const first = await provider.search(query, { domain, fresh });
-          let results = first.results;
-          const quick = buildSerpAnalysis({ query, fetchedAt: '', results, domain, pageUrl: page.url, competitors: [], ourText: '' });
-          if (!brandQuery && rankOf(quick) === null) {
-            await pause();
-            const deeper = await provider.search(query, { domain, pages: 2, start: 1, fresh });
-            results = [...results, ...deeper.results];
-          }
-          const competitors = await this.readCompetitors(results, domain);
-          return buildSerpAnalysis({
-            query,
-            fetchedAt: new Date().toISOString(),
-            results,
-            domain,
-            pageUrl: page.url,
-            competitors,
-            ourText,
-            features: first.features
-          });
-        };
+          // Mesure : première page de Google ; si la page n'y est pas (hors requête de marque), pages 2 et 3, pour voir
+          // les positions 11 à 30, celles où un effort éditorial rapporte le plus. Les concurrents ne sont lus que pour
+          // la requête cible (écarts de sections du pilier éditorial).
+          const measure = async (fresh: boolean) => {
+            const first = await provider.search(query, { domain, fresh });
+            let results = first.results;
+            const quick = buildSerpAnalysis({ query, fetchedAt: '', results, domain, pageUrl: page.url, competitors: [], ourText: '' });
+            if (!brandQuery && rankOf(quick) === null) {
+              await pause();
+              const deeper = await provider.search(query, { domain, pages: 2, start: 1, fresh });
+              results = [...results, ...deeper.results];
+            }
+            const competitors = q === 0 ? await this.readCompetitors(results, domain) : [];
+            return buildSerpAnalysis({
+              query,
+              fetchedAt: new Date().toISOString(),
+              results,
+              domain,
+              pageUrl: page.url,
+              competitors,
+              ourText,
+              features: first.features
+            });
+          };
 
-        let analysis: SerpAnalysis = { ...(await measure(false)), provider: provider.id };
-        // Re-test automatique si la position s'écarte de plus de 3 rangs du relevé précédent (ou apparaît / disparaît) :
-        // une mesure isolée peut fluctuer. La seconde mesure est retenue, la première est gardée pour mémoire.
-        const history = this.parseJson<{ serpHistory?: SerpHistoryEntry[] }>(page.aiEvaluationRaw)?.serpHistory ?? [];
-        // Comparaison avec un relevé du même fournisseur seulement : Chrome local et API ne mesurent pas pareil
-        const previous = history
-          .filter((entry) => entry.query === query && (entry.provider ?? 'browser') === provider.id)
-          .at(-1);
-        if (previous) {
-          const before = previous.pagePosition ?? previous.sitelinkOf ?? null;
-          const now = rankOf(analysis);
-          const moved = before === null || now === null ? before !== now : Math.abs(before - now) > 3;
-          if (moved) {
-            await pause();
-            const retest = await measure(true);
-            analysis = { ...retest, provider: provider.id, retest: { firstRank: now, previousRank: before } };
+          let analysis: SerpAnalysis = { ...(await measure(false)), provider: provider.id };
+          // Re-test automatique si la position s'écarte de plus de 3 rangs du relevé précédent (ou apparaît / disparaît) :
+          // une mesure isolée peut fluctuer. La seconde mesure est retenue, la première est gardée pour mémoire.
+          // Comparaison avec un relevé du même fournisseur seulement : Chrome local et API ne mesurent pas pareil
+          const previous = history
+            .filter((entry) => entry.query === query && (entry.provider ?? 'browser') === provider.id)
+            .at(-1);
+          if (previous) {
+            const before = previous.pagePosition ?? previous.sitelinkOf ?? null;
+            const now = rankOf(analysis);
+            const moved = before === null || now === null ? before !== now : Math.abs(before - now) > 3;
+            if (moved) {
+              await pause();
+              const retest = await measure(true);
+              analysis = { ...retest, provider: provider.id, retest: { firstRank: now, previousRank: before } };
+            }
           }
-        }
-        await this.saveSerp(page, analysis);
-      } catch (err: any) {
-        const blocked = err instanceof SerpBlockedError;
-        await this.saveSerp(page, empty(query, blocked ? 'BLOCKED' : 'ERROR', err?.message ?? 'Erreur inconnue'));
-        console.error(`[AuditService] SERP en échec pour « ${query} » : ${err?.message ?? err}`);
-        if (blocked) {
-          // Captcha : inutile d'insister sur les requêtes suivantes
-          for (const rest of pages.slice(index + 1)) {
-            await this.saveSerp(rest, empty(queryOf(rest), 'ERROR', 'Annulée : captcha ou blocage sur une requête précédente'));
+          analyses[q] = analysis;
+          await this.saveSerp(page, analyses[0], analyses);
+        } catch (err: any) {
+          const blocked = err instanceof SerpBlockedError;
+          analyses[q] = this.emptySerp(query, blocked ? 'BLOCKED' : 'ERROR', err?.message ?? 'Erreur inconnue');
+          console.error(`[AuditService] SERP en échec pour « ${query} » : ${err?.message ?? err}`);
+          if (blocked) {
+            // Captcha : inutile d'insister sur les requêtes suivantes, de cette page comme des autres
+            const cancelled = 'Annulée : captcha ou blocage sur une requête précédente';
+            for (let rest = q + 1; rest < queries.length; rest++) analyses[rest] = this.emptySerp(queries[rest], 'ERROR', cancelled);
+            await this.saveSerp(page, analyses[0], analyses);
+            for (const other of pages.slice(index + 1)) {
+              const list = this.serpQueriesOf(other);
+              await this.saveSerp(
+                other,
+                this.emptySerp(list[0], 'ERROR', cancelled),
+                list.map((query) => this.emptySerp(query, 'ERROR', cancelled))
+              );
+            }
+            return;
           }
-          return;
+          await this.saveSerp(page, analyses[0], analyses);
         }
       }
+
+      await this.switchToMeasuredQuery(page.id, domain, analyses);
+    }
+  }
+
+  /**
+   * Requête cible déduite mais ni suggérée par Google, ni retrouvée dans les résultats, alors que la page sort sur une
+   * autre candidate : cette requête mesurée devient la cible et la page est ré-analysée par l'IA sur elle.
+   */
+  private static async switchToMeasuredQuery(pageId: string, domain: string, analyses: SerpAnalysis[]) {
+    const page = await prisma.page.findUnique({ where: { id: pageId } });
+    if (!page?.isPillar || page.targetQuerySource === 'MANUAL' || !page.targetQuery) return;
+    const search = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial?.search;
+    const candidates = search?.candidates ?? [];
+    if (!search || candidates.length === 0) return;
+
+    const target = { ...search.targetQuery, suggestedByGoogle: search.targetQuery.suggestedByGoogle === true };
+    const better = betterMeasuredTarget(target, analyses, candidates);
+    if (!better) return;
+
+    const measured = analyses.find((serp) => serp.query === better);
+    const stored = this.parseJson<Record<string, unknown>>(page.aiEvaluationRaw) ?? {};
+    const updated = await prisma.page.update({
+      where: { id: page.id },
+      data: {
+        targetQuery: better,
+        targetQuerySource: 'AUTO',
+        metricsRaw: JSON.stringify({ ...this.parseJson<Record<string, unknown>>(page.metricsRaw), keptQuery: better }),
+        aiEvaluationRaw: JSON.stringify({ ...stored, ...(measured ? { serp: measured } : {}) })
+      }
+    });
+    console.info(`[AuditService] ${page.url} : requête cible « ${page.targetQuery} » remplacée par « ${better} », mesurée dans Google`);
+
+    const pillars = await prisma.page.findMany({ where: { auditId: page.auditId, isPillar: true } });
+    await this.analyzeEditorial(updated, pillars, domain, { force: true });
+    const audit = await prisma.audit.findUnique({ where: { id: page.auditId } });
+    if (audit?.status === 'COMPLETED') {
+      await this.refreshSiteCoherence(page.auditId, false);
+      await this.finalizeAudit(page.auditId);
     }
   }
 

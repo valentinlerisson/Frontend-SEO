@@ -94,7 +94,7 @@ export async function searchGoogle({ query, pages, start = 0, profile, timeout, 
       }
       const html = await page.content();
       // Pack local et questions : relevés sur la première page seulement
-      if (index === 0) features = parseSerpFeatures(html);
+      if (index === 0) features = parseSerpFeatures(html, query);
       const parsed = parseGoogleResults(html, 10 * start + results.length + 1, { ownDomain: domain });
       if (parsed.length === 0) {
         // Des titres sont présents à l'écran mais le parseur n'en extrait aucun : sélecteurs à ajuster

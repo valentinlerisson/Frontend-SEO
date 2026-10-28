@@ -12,6 +12,7 @@ import {
   InspectionDetail,
 } from '@/lib/audit-data';
 import type {
+  BacklinkReport,
   EditorialEvaluation,
   EditorialSignals,
   GeoEvaluation,
@@ -60,6 +61,8 @@ export type PersistenceAuditWithRelations = {
   crawlStartedAt?: Date | null;
   completedAt?: Date | null;
   errorMessage?: string | null;
+  /** JSON BacklinkReport relevé pendant le crawl */
+  backlinksRaw?: string | null;
   project?: {
     id: string;
     domain: string;
@@ -140,6 +143,7 @@ type PageEvaluation = {
   geo?: GeoEvaluation;
   editorialStatus?: { engine: 'LLM' | 'HEURISTIC'; error?: string };
   serp?: SerpAnalysis;
+  serpQueries?: SerpAnalysis[];
   serpHistory?: SerpHistoryEntry[];
 };
 
@@ -443,6 +447,7 @@ export class AuditPresenter {
       subpages,
       globalIssues,
       inspections,
+      backlinks: parseJson<BacklinkReport>(audit.backlinksRaw) ?? undefined,
     };
   }
 
@@ -474,6 +479,8 @@ export class AuditPresenter {
       techScore: Math.round(page.techScore ?? 0),
       ...roleOf(page),
       serp: readEvaluation(page)?.serp,
+      serpQueries: readEvaluation(page)?.serpQueries,
+      queryCandidates: readEvaluation(page)?.editorial?.search?.candidates,
       serpHistory: readEvaluation(page)?.serpHistory,
     };
   }

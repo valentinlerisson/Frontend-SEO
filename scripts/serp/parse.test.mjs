@@ -133,3 +133,11 @@ test('parseSerpFeatures : pack local et questions « Autres questions posées »
     peopleAlsoAsk: [],
   });
 });
+
+test('parseSerpFeatures : la requête elle-même (data-q hors du bloc de questions) n’est pas une question', () => {
+  const html = `<div id="search">
+    <div data-q="résidence seniors Lyon"></div>
+    <div data-q="Comment choisir une résidence seniors ?"></div>
+  </div>`;
+  assert.deepEqual(parseSerpFeatures(html, 'résidence seniors Lyon').peopleAlsoAsk, ['Comment choisir une résidence seniors ?']);
+});

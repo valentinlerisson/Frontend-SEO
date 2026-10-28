@@ -27,5 +27,21 @@ export function describePagePosition(serp: SerpAnalysis): {
       detail: `Une autre page du site sort au n°${serp.ownPosition} ; cette page n'apparaît pas seule`,
     }
   }
-  return { rank: null, badge: `Absent du Top ${serp.results.length}`, detail: 'Le site n’apparaît pas dans les résultats' }
+  const depth = serp.depth ?? serp.results.length
+  return {
+    rank: null,
+    badge: `Absent du Top ${depth}`,
+    detail: `Aucune page du site dans les ${depth} premiers résultats Google lus`,
+  }
+}
+
+/**
+ * Questions « Autres questions posées » réelles : les relevés antérieurs au correctif du parseur contenaient
+ * parfois la requête elle-même (attribut data-q porté par un autre élément de Google)
+ */
+export function peopleAlsoAsk(serp: Pick<SerpAnalysis, 'query' | 'features'>): string[] {
+  const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim()
+  return (serp.features?.peopleAlsoAsk ?? []).filter(
+    (question) => /\?$/.test(question.trim()) && normalize(question) !== normalize(serp.query),
+  )
 }

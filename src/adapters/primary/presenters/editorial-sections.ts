@@ -1,3 +1,4 @@
+import { peopleAlsoAsk } from '@/lib/serp-labels';
 import type { EditorialAccordion, InspectionData, InspectionItemData } from '@/lib/audit-data';
 import type { EditorialEvaluation, EditorialSignals, PageRole, SearchIntent, SerpAnalysis } from '@/core/domain/types';
 import { ROLE_LABEL } from '@/core/domain/scoring/page-role';
@@ -95,6 +96,9 @@ function diagnostic(accordion: EditorialAccordion, title: string, action?: strin
 }
 
 function isBrandQuery(editorial: EditorialEvaluation, role: PageRole) {
+  // Repère posé à l'analyse (marque dans la requête, page de contact ou utilitaire) ; sinon règle par le rôle
+  const flagged = editorial.search?.targetQuery.isBrand;
+  if (flagged !== undefined) return flagged;
   return (
     BRAND_ROLES.includes(role) ||
     editorial.intentMatch.detectedIntent === 'NAVIGATIONAL' ||
@@ -380,12 +384,13 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
         source: 'google',
       });
     }
-    if (serp.features.peopleAlsoAsk.length > 0) {
+    const questions = peopleAlsoAsk(serp);
+    if (questions.length > 0) {
       googleItems.push({
-        text: `${serp.features.peopleAlsoAsk.length} question(s) « Autres questions posées » : autant de sous-titres possibles`,
+        text: `${questions.length} question(s) « Autres questions posées » : autant de sous-titres possibles`,
         status: 'info',
         source: 'google',
-        details: serp.features.peopleAlsoAsk.map((question) => ({ label: question, status: 'valid' as const })),
+        details: questions.map((question) => ({ label: question, status: 'valid' as const })),
       });
     }
   }

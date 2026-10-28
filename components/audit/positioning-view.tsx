@@ -9,7 +9,8 @@ import { AuditStateGate } from './audit-state-gate'
 import { useAudit } from '@/components/providers/audit-provider'
 import { useInspection } from '@/components/providers/inspection-provider'
 import type { SubpageItem } from '@/lib/audit-data'
-import { describePagePosition } from '@/lib/serp-labels'
+import { describePagePosition, peopleAlsoAsk } from '@/lib/serp-labels'
+import { normalizeText } from '@/core/domain/scoring/autocomplete-relevance'
 
 /** Pages mesurables par lancement (limite de l'API) */
 const MAX_PER_RUN = 20
@@ -49,12 +50,9 @@ function PositionBadge({ serp, history }: { serp?: SubpageItem['serp']; history?
           Pack local affiché
         </span>
       )}
-      {(serp.features?.peopleAlsoAsk.length ?? 0) > 0 && (
-        <span
-          title={serp.features?.peopleAlsoAsk.join(' · ')}
-          className="text-[11px] text-muted-foreground"
-        >
-          {serp.features?.peopleAlsoAsk.length} question(s) « Autres questions posées »
+      {peopleAlsoAsk(serp).length > 0 && (
+        <span title={peopleAlsoAsk(serp).join(' · ')} className="text-[11px] text-muted-foreground">
+          {peopleAlsoAsk(serp).length} question(s) « Autres questions posées »
         </span>
       )}
       {previous && (
@@ -90,6 +88,66 @@ function StatusCell({ serp }: { serp?: SubpageItem['serp'] }) {
     <span className="text-xs text-muted-foreground">
       {serp.fetchedAt ? `Mesuré le ${new Date(serp.fetchedAt).toLocaleDateString('fr-FR')}` : 'Mesuré'}
     </span>
+  )
+}
+
+/**
+ * Requêtes mesurées pour la page (requête cible puis candidates génériques), avec leur position. La requête cible
+ * peut être remplacée par une autre d'un clic : elle devient alors une requête choisie et la page est ré-analysée.
+ */
+function QueryPositions({
+  page,
+  busy,
+  onChoose,
+}: {
+  page: SubpageItem
+  busy: boolean
+  onChoose: (query: string) => void
+}) {
+  const measured = (page.serpQueries ?? []).filter((serp) => serp.query !== page.serp?.query)
+  if (measured.length === 0) return null
+  const suggested = (query: string) =>
+    page.queryCandidates?.find(
+      (candidate) =>
+        normalizeText(query) === normalizeText(candidate.query) || normalizeText(query).startsWith(`${normalizeText(candidate.query)} `),
+    )?.suggestedByGoogle
+  const visible = measured.filter((serp) => serp.status === 'DONE' && describePagePosition(serp).rank !== null).length
+  return (
+    <div className="mt-2 flex flex-col gap-1.5 border-t border-shade-3e pt-2">
+      <span className="text-[11px] text-muted-foreground">
+        Autres requêtes génériques : visible sur {visible} sur {measured.length}
+      </span>
+      {measured.map((serp) => {
+        const position = serp.status === 'DONE' ? describePagePosition(serp) : null
+        return (
+          <div key={serp.query} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-foreground">« {serp.query} »</span>
+            {suggested(serp.query) && (
+              <span className="rounded-md border border-[#38bdf8]/40 px-1.5 py-0.5 text-[10px] font-semibold text-sky-soft">
+                Suggérée par Google
+              </span>
+            )}
+            <span className="font-semibold text-foreground">
+              {serp.status === 'RUNNING'
+                ? 'En cours'
+                : serp.status === 'DONE'
+                  ? position?.badge
+                  : serp.message ?? 'Échec'}
+            </span>
+            {page.isPillar && serp.status === 'DONE' && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onChoose(serp.query)}
+                className="text-[11px] font-semibold text-primary-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                En faire la requête cible
+              </button>
+            )}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -147,6 +205,29 @@ export function PositioningView({ projectId }: { projectId: string }) {
     }
   }
 
+  // Requête mesurée choisie comme cible : saisie manuelle, ré-analyse éditoriale de la page
+  const chooseQuery = async (pageId: string, query: string) => {
+    if (!auditDbId) return
+    setLaunching(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/audits/${auditDbId}/pages/${pageId}/editorial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetQuery: query }),
+      })
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        throw new Error(payload.error || `Erreur ${res.status}`)
+      }
+      await refreshAudit()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Changement de requête impossible')
+    } finally {
+      setLaunching(false)
+    }
+  }
+
   const toggle = (id: string) =>
     setSelected((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]))
 
@@ -180,8 +261,9 @@ export function PositioningView({ projectId }: { projectId: string }) {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Positionnement Google</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Position de vos pages dans Google sur la requête de votre choix, et pages qui se classent devant elles.
-            Mesure faite dans une fenêtre Chrome locale : cochez les pages à analyser, quelques-unes à la fois.
+            Position de vos pages dans Google sur leur requête cible et sur 2 autres recherches génériques proposées
+            par l’IA, sans le nom de la marque. Mesure faite dans une fenêtre Chrome locale : cochez les pages à
+            analyser, quelques-unes à la fois (jusqu’à 3 recherches par page).
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-3">
@@ -290,8 +372,8 @@ export function PositioningView({ projectId }: { projectId: string }) {
                   />
                 </th>
                 <th scope="col" className="bg-shade-38 px-4 py-3 font-normal">Page</th>
-                <th scope="col" className="min-w-[260px] bg-shade-38 px-4 py-3 font-normal">Requête</th>
-                <th scope="col" className="bg-shade-38 px-4 py-3 font-normal">Position</th>
+                <th scope="col" className="min-w-[260px] bg-shade-38 px-4 py-3 font-normal">Requête cible</th>
+                <th scope="col" className="min-w-[280px] bg-shade-38 px-4 py-3 font-normal">Position</th>
                 <th scope="col" className="bg-shade-38 px-4 py-3 font-normal">Devant vous</th>
                 <th scope="col" className="bg-shade-38 px-4 py-3 font-normal">État</th>
                 <th scope="col" className="rounded-r-xl bg-shade-38 px-4 py-3 font-normal">Actions</th>
@@ -357,6 +439,11 @@ export function PositioningView({ projectId }: { projectId: string }) {
                       </td>
                       <td className="px-4 py-4">
                         <PositionBadge serp={serp} history={page.serpHistory} />
+                        <QueryPositions
+                          page={page}
+                          busy={launching || running}
+                          onChoose={(query) => chooseQuery(page.id, query)}
+                        />
                       </td>
                       <td className="px-4 py-4 text-xs text-muted-foreground">
                         {ahead.length === 0 ? '—' : ahead.map((result) => result.domain).join(', ')}

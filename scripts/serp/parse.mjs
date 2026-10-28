@@ -139,18 +139,21 @@ export function parseGoogleResults(html, startPosition = 1, options = {}) {
  *  - localPack : bloc de fiches d'établissements (carte « Lieux ») ;
  *  - peopleAlsoAsk : questions du bloc « Autres questions posées ».
  * Repérage par attributs et libellés de Google : fragile, à revoir si Google change sa page.
+ * `query` : requête recherchée. Google porte aussi l'attribut `data-q` sur d'autres éléments avec la requête
+ * elle-même : seules les vraies questions (point d'interrogation final, différentes de la requête) sont gardées.
  */
-export function parseSerpFeatures(html) {
+export function parseSerpFeatures(html, query = '') {
   const $ = cheerio.load(html);
   const text = $('#search, #rso, body').first().text();
   const localPack =
     $('[data-cid]').length > 0 ||
     $('a[href*="tbm=lcl"], a[href*="udm=1"]').length > 0 ||
     /Plus de lieux|Plus d.entreprises|Afficher plus de lieux/i.test(text);
+  const normalize = (value) => value.toLowerCase().replace(/\s+/g, ' ').trim();
   const questions = new Set();
   $('[data-q]').each((_, el) => {
     const question = ($(el).attr('data-q') ?? '').replace(/\s+/g, ' ').trim();
-    if (question.length > 5) questions.add(question);
+    if (question.length > 5 && /\?$/.test(question) && normalize(question) !== normalize(query)) questions.add(question);
   });
   return { localPack, peopleAlsoAsk: Array.from(questions).slice(0, 8) };
 }

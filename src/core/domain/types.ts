@@ -278,6 +278,28 @@ export interface EditorialEvaluation {
 
 export type SearchIntent = 'INFORMATIONAL' | 'TRANSACTIONAL' | 'COMMERCIAL' | 'NAVIGATIONAL';
 
+/** Requête qu'un internaute qui ne connaît pas le site taperait pour trouver la page */
+export interface QueryCandidate {
+  query: string;
+  intent: SearchIntent;
+  /** La requête elle-même (ou quasi identique) est proposée par Google Autocomplete ; absent : non vérifiée */
+  suggestedByGoogle?: boolean;
+}
+
+/** Données transmises à l'IA pour proposer les requêtes candidates d'une page */
+export interface QueryProposalInput {
+  url: string;
+  domain: string;
+  role: PageRole;
+  title?: string;
+  metaDescription?: string;
+  h1?: string;
+  headings: { level: number; text: string }[];
+  excerpt: string;
+  /** Autres pages piliers : chacune vise son propre sujet, une requête qui leur correspond mieux n'est pas proposée */
+  siblingPages: { url: string; title?: string; h1?: string }[];
+}
+
 export interface SearchInsights {
   targetQuery: {
     query: string;
@@ -293,7 +315,14 @@ export interface SearchInsights {
     suggestedByGoogle?: boolean;
     /** Requête déduite lors d'une analyse précédente et conservée (contenu inchangé), au lieu d'être redéduite */
     kept?: boolean;
+    /** La requête contient la marque, ou la page est un contact ou une page utilitaire : le site sort forcément */
+    isBrand?: boolean;
   };
+  /**
+   * Requêtes génériques proposées par l'IA (sans la marque), vérifiées dans Google Autocomplete. La requête cible en
+   * est tirée ; les autres sont mesurées dans Google avec elle (onglet Positionnement).
+   */
+  candidates?: QueryCandidate[];
   /** Vraies requêtes d'internautes ; l'IA n'invente pas cette liste */
   autocomplete: {
     suggestions: string[];
@@ -356,6 +385,8 @@ export interface EditorialAnalysisInput {
   siblingPages: { url: string; title?: string; h1?: string }[];
   /** Requête déduite conservée d'une analyse précédente : l'IA la garde comme cible, sans la redéduire */
   fixedQuery?: string;
+  /** Requête choisie parmi les candidates de cette analyse : l'IA la garde comme cible */
+  chosenQuery?: string;
   /** Identifiant unique sans effet sur l'analyse : rend chaque appel différent pour contourner tout cache (variabilité) */
   nonce?: string;
 }
@@ -453,6 +484,48 @@ export interface SiteCoherenceFinding {
   title: string;
   explanation: string;
   recommendation: string;
+}
+
+/** Lien vers le site retrouvé en lisant une page du domaine référent */
+export interface VerifiedBacklink {
+  sourceUrl: string;
+  targetUrl: string;
+  /** Texte du lien (alt d'image ou libellé accessible à défaut) ; vide si aucun */
+  anchor: string;
+  nofollow: boolean;
+}
+
+/** Domaine qui fait au moins un lien vers le site, d'après le graphe de liens de Common Crawl */
+export interface ReferringDomain {
+  domain: string;
+  /** Hôtes de ce domaine dans le graphe : taille du site référent, pas nombre de liens */
+  hosts: number;
+  /**
+   * Vérification en direct sur quelques pages du domaine (accueil, puis pages de partenaires, références, mentions) :
+   * FOUND lien retrouvé ; NOT_FOUND pages lues sans lien (il peut être sur une page plus profonde) ; UNREACHABLE
+   * domaine injoignable. Absente : domaine non vérifié (au-delà des premiers).
+   */
+  verification?: {
+    status: 'FOUND' | 'NOT_FOUND' | 'UNREACHABLE';
+    pagesChecked: number;
+    links: VerifiedBacklink[];
+  };
+}
+
+/** Backlinks du site, relevés pendant le crawl (hors score) */
+export interface BacklinkReport {
+  /** DONE : graphe interrogé ; UNAVAILABLE : base Common Crawl absente ; ERROR : échec de la lecture */
+  status: 'DONE' | 'UNAVAILABLE' | 'ERROR';
+  message?: string;
+  source: 'COMMON_CRAWL';
+  /** Version du graphe (ex. cc-main-2026-aug-sep-oct) : la donnée a le retard de cette exploration */
+  release?: string;
+  fetchedAt: string;
+  /** Le domaine audité figure dans le graphe (sinon aucun lien observé n'est possible) */
+  domainInGraph?: boolean;
+  referringDomains: ReferringDomain[];
+  /** Comparaison avec l'audit précédent du projet */
+  changes?: { previousRelease?: string; previousDate: string; added: string[]; lost: string[] };
 }
 
 /** Résultat organique d'une recherche Google */

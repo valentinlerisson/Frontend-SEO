@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Métriques SEO d'Auditly</title>
+<meta name="description" content="Les techniques et métriques utilisées par Auditly pour calculer le score SEO d'un site : utilité et mise en place.">
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --surface-2: #f0f0ec;
+    --text: #1b1b1f;
+    --muted: #5d5d66;
+    --border: #e1e1dc;
+    --accent: #7a6c00;
+    --accent-bg: #fbf6c9;
+    --info: #0b5cad;
+    --info-bg: #e3effc;
+    --neutral-bg: #ececea;
+    --ok: #13792f;
+    --ok-bg: #e2f4e7;
+    --warn: #9a4b00;
+    --warn-bg: #fdeedd;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.04);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111113;
+      --surface: #1b1b1e;
+      --surface-2: #242428;
+      --text: #ececee;
+      --muted: #a3a3ad;
+      --border: #303036;
+      --accent: #f2e14a;
+      --accent-bg: #34300e;
+      --info: #8cc4ff;
+      --info-bg: #13283f;
+      --neutral-bg: #2a2a2f;
+      --ok: #7fd99b;
+      --ok-bg: #143021;
+      --warn: #ffbf80;
+      --warn-bg: #3a2614;
+      --shadow: none;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111113; --surface: #1b1b1e; --surface-2: #242428; --text: #ececee; --muted: #a3a3ad;
+    --border: #303036; --accent: #f2e14a; --accent-bg: #34300e; --info: #8cc4ff; --info-bg: #13283f;
+    --neutral-bg: #2a2a2f; --ok: #7fd99b; --ok-bg: #143021; --warn: #ffbf80; --warn-bg: #3a2614;
+    --shadow: none; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  header.top .wrap { display: flex; align-items: center; gap: 12px; min-height: 60px; flex-wrap: wrap; padding-block: 8px; }
+  .brand { font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
+  .brand span { color: var(--accent); }
+  nav.toc { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav.toc a {
+    color: var(--muted); text-decoration: none; font-size: 14px;
+    padding: 6px 10px; border-radius: 8px;
+  }
+  nav.toc a:hover { background: var(--surface-2); color: var(--text); }
+  .search {
+    width: 220px; max-width: 100%;
+    padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font: inherit; font-size: 14px;
+  }
+
+  .hero { padding: 48px 0 24px; }
+  .hero h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
+  .hero p.lead { font-size: 18px; color: var(--muted); max-width: 760px; margin: 0; }
+
+  section { padding: 24px 0; }
+  h2 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h3 { font-size: 18px; margin: 28px 0 10px; }
+  .section-intro { color: var(--muted); max-width: 820px; margin: 0 0 18px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .card .k { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  .card .v { font-size: 28px; font-weight: 700; margin: 4px 0 6px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .note {
+    background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 12px; padding: 14px 18px; margin: 16px 0; box-shadow: var(--shadow);
+  }
+  .note.info { border-left-color: var(--info); }
+  .note.warn { border-left-color: var(--warn); }
+  .note strong:first-child { display: block; margin-bottom: 2px; }
+  .note ul { margin: 6px 0 0; padding-left: 20px; }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    overflow: hidden; box-shadow: var(--shadow);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); background: var(--surface-2); padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 14px 16px; border-top: 1px solid var(--border); vertical-align: top; font-size: 15px; }
+  tbody tr:first-child td { border-top: 0; }
+  td.name { width: 22%; font-weight: 650; }
+  td.desc { width: 30%; color: var(--muted); }
+  td.how ul { margin: 6px 0 0; padding-left: 18px; }
+  td.how li { margin: 2px 0; }
+  .badge {
+    display: inline-block; margin-top: 6px; font-size: 12px; font-weight: 650;
+    padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+  }
+  .b-score { background: var(--accent-bg); color: var(--accent); }
+  .b-off { background: var(--neutral-bg); color: var(--muted); }
+  .b-ind { background: var(--info-bg); color: var(--info); }
+  .src { display: inline-block; font-size: 12px; font-weight: 600; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; margin-left: 4px; }
+
+  dl.glossary { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 10px 20px; margin: 0; }
+  dl.glossary dt { font-weight: 650; }
+  dl.glossary dd { margin: 0; color: var(--muted); }
+
+  .hidden { display: none !important; }
+  .empty { padding: 16px; color: var(--muted); }
+  footer { padding: 32px 0 56px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 760px) {
+    nav.toc { display: none; }
+    .search { width: 100%; }
+    table, thead, tbody, tr, td { display: block; width: 100% !important; }
+    thead { display: none; }
+    tbody tr { border-top: 1px solid var(--border); padding: 12px 16px; }
+    tbody tr:first-child { border-top: 0; }
+    tbody td { border: 0; padding: 4px 0; }
+    td.desc::before, td.how::before {
+      display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--muted); font-weight: 600; margin-top: 6px;
+    }
+    td.desc::before { content: "Description"; }
+    td.how::before { content: "Mise en place"; }
+    dl.glossary { grid-template-columns: 1fr; }
+    dl.glossary dd { margin-bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">Auditly <span>·</span> Métriques SEO</div>
+    <nav class="toc" aria-label="Sommaire">
+      <a href="#principe">Principe</a>
+      <a href="#technique">Technique</a>
+      <a href="#editorial">Éditorial</a>
+      <a href="#geo">GEO</a>
+      <a href="#positionnement">Positionnement</a>
+      <a href="#backlinks">Backlinks</a>
+      <a href="#limites">Limites</a>
+      <a href="#glossaire">Glossaire</a>
+    </nav>
+    <input class="search" type="search" placeholder="Filtrer les métriques…" aria-label="Filtrer les métriques" id="filter">
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <h1>Comment Auditly calcule le score SEO d'un site</h1>
+    <p class="lead">Auditly explore un site, puis note chaque page sur 100 selon trois piliers : la qualité technique, la qualité du contenu et la capacité à être repris par les moteurs de réponse à base d'IA. Ce document liste chaque technique ou métrique prise en compte, à quoi elle sert et comment elle est mesurée.</p>
+  </div>
+
+  <!-- ===================================================== PRINCIPE -->
+  <section id="principe">
+    <h2>Le principe en bref</h2>
+    <p class="section-intro">Le score global du site combine trois notes. Chacune est ramenée sur 100.</p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Technique</div>
+        <div class="v">40 %</div>
+        <p>Toutes les pages explorées. Le site est-il rapide, accessible à Google et bien relié ?</p>
+      </div>
+      <div class="card">
+        <div class="k">Éditorial</div>
+        <div class="v">35 %</div>
+        <p>Les pages piliers seulement. Le contenu répond-il à ce que l'internaute cherche ?</p>
+      </div>
+      <div class="card">
+        <div class="k">GEO (IA)</div>
+        <div class="v">25 %</div>
+        <p>Les pages piliers seulement. Une IA comme ChatGPT ou Google AI Overviews peut-elle citer la page ?</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>Une règle de base : ne jamais donner de points au hasard.</strong>
+      Quand un critère ne peut pas être mesuré (donnée indisponible) ou n'a pas de sens pour la page (par exemple un auteur sur une page de contact), il est retiré du calcul au lieu d'être compté juste ou faux. La note reste sur 100, et l'interface indique sur combien de points elle a réellement été calculée.
+    </div>
+
+    <div class="note info">
+      <strong>Pages piliers et rôle des pages</strong>
+      Les <em>pages piliers</em> sont les pages stratégiques choisies par l'utilisateur, les seules analysées par l'IA. Chaque page reçoit aussi un <em>rôle</em> (accueil, marque, contact, offre, réalisation, article, liste de contenus, page utilitaire). Le rôle décide quels critères s'appliquent : on n'attend pas la même chose d'un article de blog et d'une page de contact.
+    </div>
+
+    <div class="note info">
+      <strong>D'où viennent les mesures</strong>
+      <ul>
+        <li><strong>Mesuré</strong> : lu directement sur la page ou le site par le robot d'exploration d'Auditly.</li>
+        <li><strong>Google</strong> : données publiques de Google (PageSpeed Insights, suggestions de recherche, résultats de recherche).</li>
+        <li><strong>IA</strong> : jugement d'un modèle de langage sur le contenu, avec des grilles de notation fixes. Quand c'est possible, l'IA ne fait que proposer des extraits, et le code vérifie et compte lui-même.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================================================== TECHNIQUE -->
+  <section id="technique" data-filterable>
+    <h2>1. Technique</h2>
+    <p class="section-intro">Calculé sur chaque page explorée. Le robot suit les liens depuis la page d'accueil jusqu'à 6 clics, puis ajoute les pages du sitemap qu'aucun lien n'atteint (150 pages par défaut). Une page en erreur (404, 500…) ou exclue de Google (« noindex ») est plafonnée à 20/100. Une page qui ne répond pas vaut 0. La note technique du site est la moyenne des pages, sans les pages volontairement exclues de Google, comme les mentions légales.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nom</th><th>Description</th><th>Mise en place</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">Core Web Vitals (LCP, INP, CLS)<br><span class="badge b-score">25 pts</span></td>
+            <td class="desc">Vitesse d'affichage, réactivité et stabilité de la page, telles que les vit l'internaute. Google les prend en compte dans l'expérience de page.</td>
+            <td class="how">API Google PageSpeed Insights, en mobile, sur la page d'accueil et les 10 pages les plus liées. Les mesures d'utilisateurs réels sont préférées ; à défaut, une mesure en laboratoire.
+              <ul><li>LCP (affichage du contenu principal) : 10 pts</li><li>INP (réactivité aux clics) : 8 pts</li><li>CLS (stabilité de la mise en page) : 7 pts</li></ul>
+              Une mesure absente (page non mesurée, trafic trop faible pour l'INP) est retirée du calcul.</td>
+          </tr>
+          <tr>
+            <td class="name">Profondeur de clic<br><span class="badge b-score">10 pts</span></td>
+            <td class="desc">Une page enfouie loin de l'accueil reçoit moins de poids et est visitée moins souvent par Google.</td>
+            <td class="how">Nombre de clics depuis l'accueil, compté par le robot d'exploration. 3 clics ou moins : 10 pts ; 4 clics : 5 pts ; 5 ou plus : 0 pt. Une page trouvée seulement dans le sitemap n'a pas de profondeur : critère retiré.</td>
+          </tr>
+          <tr>
+            <td class="name">Liens internes entrants (pages orphelines)<br><span class="badge b-score">10 pts</span></td>
+            <td class="desc">Une page vers laquelle aucune autre ne pointe est difficile à découvrir et paraît peu importante.</td>
+            <td class="how">Nombre de pages du site qui pointent vers elle. 3 ou plus : 10 pts ; 1 ou 2 : 5 pts. Une page du sitemap qu'aucun lien n'atteint est <em>orpheline</em> : 0 pt. Si l'exploration a été coupée par la limite de pages, un compte faible n'est pas une preuve : critère retiré.</td>
+          </tr>
+          <tr>
+            <td class="name">Blocage par robots.txt<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Une page interdite à Google dans le fichier robots.txt ne peut pas être explorée.</td>
+            <td class="how">Lecture du fichier robots.txt du site avec les mêmes règles que Google, puis test de chaque page. Critère retiré si le fichier est injoignable.</td>
+          </tr>
+          <tr>
+            <td class="name">Présence dans le sitemap XML<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Le sitemap aide Google à découvrir les pages du site.</td>
+            <td class="how">Recherche du sitemap (déclaré dans robots.txt ou aux adresses usuelles), puis comparaison avec chaque page. Présente : 5 pts ; absente : 2 pts. Critère retiré si le site n'a pas de sitemap.</td>
+          </tr>
+          <tr>
+            <td class="name">Balise canonique<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Indique à Google l'adresse de référence d'une page et évite les contenus en double.</td>
+            <td class="how">Lecture de la balise <code>rel=canonical</code>. Pointe vers la page elle-même : 5 pts ; absente : 3 pts (souvent sans gravité) ; pointe vers une autre adresse : 0 pt et alerte, car Google risque d'indexer l'autre page à sa place.</td>
+          </tr>
+          <tr>
+            <td class="name">HTTPS<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Connexion sécurisée, signal de confiance.</td>
+            <td class="how">Contrôle du protocole de l'adresse finale : HTTPS 5 pts, sinon 0.</td>
+          </tr>
+          <tr>
+            <td class="name">Code de réponse HTTP<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Une page en erreur n'est pas indexable ; une adresse qui redirige ajoute un détour.</td>
+            <td class="how">Chaque redirection est suivie une à une. Page servie directement : 5 pts ; après une redirection permanente (301) : 3 pts ; après une redirection temporaire (302) : 1 pt et alerte ; erreur 4xx ou 5xx : 0 pt et note plafonnée à 20/100.</td>
+          </tr>
+          <tr>
+            <td class="name">Chaîne de redirections<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Chaque redirection successive ralentit l'accès et gaspille le temps d'exploration de Google.</td>
+            <td class="how">Nombre de redirections traversées. 0 ou 1 : 5 pts (une redirection unique est déjà comptée ci-dessus) ; 2 ou plus : 0 pt.</td>
+          </tr>
+          <tr>
+            <td class="name">Titre principal H1<br><span class="badge b-score">8 pts</span></td>
+            <td class="desc">Annonce le sujet de la page au lecteur et à Google.</td>
+            <td class="how">Comptage des balises <code>&lt;h1&gt;</code>. Présent : 8 pts (plusieurs H1 sont signalés sans perte de points) ; absent ou vide : 0 pt.</td>
+          </tr>
+          <tr>
+            <td class="name">Title et méta description<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Le Title est un signal fort de pertinence ; la méta description influence l'envie de cliquer dans les résultats.</td>
+            <td class="how">Title de 30 à 65 caractères et méta de 110 à 165 : 5 pts ; présents mais hors de ces longueurs : 3 pts ; manquants : 0 pt. Poids volontairement faible : Google réécrit souvent ces textes.</td>
+          </tr>
+          <tr>
+            <td class="name">Textes alternatifs des images<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Accessibilité aux personnes malvoyantes et référencement dans la recherche d'images.</td>
+            <td class="how">Part des images qui ont un attribut <code>alt</code> renseigné. 90 % ou plus (ou aucune image) : 5 pts ; 70 à 89 % : 3 pts ; moins : 0 pt.</td>
+          </tr>
+          <tr>
+            <td class="name">Hiérarchie des sous-titres<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Une structure H2, H3… bien ordonnée facilite la lecture et l'accessibilité.</td>
+            <td class="how">Détection des sauts de niveau (un H4 juste après un H2). Signalé pour information seulement : Google ne classe pas les pages selon cet ordre.</td>
+          </tr>
+          <tr>
+            <td class="name">Temps de réponse, liens et images<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Détails utiles pour corriger une page.</td>
+            <td class="how">Durée de réponse du serveur, liste des images sans texte alternatif, liens sortants et pages qui pointent vers la page, enregistrés pendant l'exploration.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================================================== ÉDITORIAL -->
+  <section id="editorial" data-filterable>
+    <h2>2. Éditorial</h2>
+    <p class="section-intro">Calculé sur les pages piliers. Le contenu est jugé par rapport à une <em>requête cible</em>, c'est-à-dire la recherche Google sur laquelle la page doit se positionner. L'utilisateur peut la saisir ; sinon elle est choisie parmi des recherches génériques proposées par l'IA, sans le nom de la marque.</p>
+
+    <div class="note info">
+      <strong>Des recherches de prospects, jamais le nom de la marque</strong>
+      L'IA propose 5 recherches qu'un internaute qui ne connaît pas encore l'organisation taperait pour trouver la page, par exemple « agence data Toulouse » plutôt que « Big Happy ». Chaque page reçoit des recherches qui lui sont propres : l'activité générale du site revient à la page d'accueil. Le code retire ensuite toute recherche qui contient la marque : le site sort forcément dessus, la mesurer ne prouverait rien. Chaque recherche est vérifiée dans les suggestions Google. La requête cible est la première que Google suggère parmi les 3 premières, sinon la première de l'IA. Les pages de contact et les pages légales gardent une recherche sur le nom du site.
+    </div>
+
+    <div class="note warn">
+      <strong>Une requête déduite de la page est une preuve faible.</strong>
+      Une requête que l'IA tire du contenu de la page lui correspond presque toujours. Elle n'est donc considérée comme fiable que si Google la confirme : elle figure dans les suggestions de recherche Google, ou la page sort réellement dans Google sur cette requête. Sans confirmation, l'intention et les zones chaudes (35 pts) sont retirées du calcul. Une fois choisie, la requête est conservée d'un audit à l'autre tant que le Title, le H1 et les sous-titres ne changent pas, pour que les résultats restent comparables.
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nom</th><th>Description</th><th>Mise en place</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">Intention de recherche<br><span class="badge b-score">20 pts</span></td>
+            <td class="desc">La page doit répondre à ce que cherche vraiment l'internaute (s'informer, comparer, acheter, trouver une entreprise). C'est la base de la pertinence.</td>
+            <td class="how"><span class="src">IA</span> L'IA compare le contenu (Title, titres, 1 000 premiers mots) à la requête cible : réponse exacte 20 ; écart mineur 15 ; partielle 10 ; marginale 5 ; hors sujet 0. L'intention est comparée à celle des résultats Google réels quand ils ont été lus, sinon aux suggestions de recherche.</td>
+          </tr>
+          <tr>
+            <td class="name">Cannibalisation<br><span class="badge b-score">20 pts</span></td>
+            <td class="desc">Deux pages du même site qui visent la même recherche se font concurrence, et Google hésite entre elles.</td>
+            <td class="how"><span class="src">Google</span> Quand les résultats Google de la requête ont été lus : seule la page auditée sort, 20 pts ; deux pages du site, 10 ; trois ou plus, 5 ; une autre page du site sort à la place de celle-ci, 10 pts et alerte. Si le site n'apparaît pas du tout, rien n'est mesurable.
+              <br><span class="src">IA</span> Sinon, et dans ce dernier cas, estimation de l'IA à partir des adresses et des titres des autres pages piliers.</td>
+          </tr>
+          <tr>
+            <td class="name">Zones chaudes<br><span class="badge b-score">15 pts</span></td>
+            <td class="desc">Les mots de la recherche doivent apparaître là où Google et le lecteur regardent en premier.</td>
+            <td class="how"><span class="src">Mesuré</span> Part des mots de la requête présents dans le Title (6 pts), les 100 premiers mots (5 pts) et les sous-titres H2/H3 (4 pts), au prorata. Comparaison sans majuscules, accents ni pluriel. Limite : un synonyme ne compte pas.</td>
+          </tr>
+          <tr>
+            <td class="name">Réponse directe ou proposition de valeur<br><span class="badge b-score">15 pts</span></td>
+            <td class="desc">L'internaute pressé doit trouver tout de suite ce qu'il cherche.</td>
+            <td class="how"><span class="src">IA</span> L'IA juge le début de la page. Pour un article : une réponse ou un résumé. Pour les autres pages : ce que propose l'entreprise, pour qui, et une action visible. Immédiate et claire 15 ; incomplète 11 ; noyée plus bas 7 ; seulement suggérée 3 ; absente 0.</td>
+          </tr>
+          <tr>
+            <td class="name">Couverture du sujet<br><span class="badge b-score">20 pts</span></td>
+            <td class="desc">Une page qui traite les notions attendues de son métier se classe mieux qu'un texte superficiel.</td>
+            <td class="how"><span class="src">IA</span> L'IA liste les notions traitées et celles qui manquent (organismes, lois, normes, métiers, lieux…). Complète 20 ; quelques manques 15 ; partielle 10 ; effleurée 5 ; texte pauvre 0. Les notions manquantes sont présentées comme des pistes, pas comme des erreurs.</td>
+          </tr>
+          <tr>
+            <td class="name">Signaux de confiance E-E-A-T<br><span class="badge b-score">10 pts · articles</span></td>
+            <td class="desc">Pour un contenu informatif : savoir qui l'a écrit, quand, et sur quelles sources il s'appuie.</td>
+            <td class="how"><span class="src">Mesuré</span> Auteur 5 pts, date 3 pts, sources 2 pts, lus dans la page et son balisage. Seulement pour les articles : retiré du calcul pour les autres pages.</td>
+          </tr>
+          <tr>
+            <td class="name">Rôle de la page<br><span class="badge b-ind">Influence le score</span></td>
+            <td class="desc">Adapte ce qu'on attend de la page : on ne demande pas un auteur à une page de contact.</td>
+            <td class="how"><span class="src">Mesuré</span> Déduit de l'adresse, du balisage Schema.org, de la date de publication et des rubriques qui citent la page. <span class="src">IA</span> L'IA peut le corriger. L'utilisateur peut le changer à la main, ce qui prime sur tout.</td>
+          </tr>
+          <tr>
+            <td class="name">Suggestions de recherche Google<br><span class="badge b-ind">Influence le score</span></td>
+            <td class="desc">De vraies recherches d'internautes, qui confirment la requête cible et l'intention.</td>
+            <td class="how"><span class="src">Google</span> Service public de suggestions de Google Autocomplete, interrogé sans le nom de la marque. Seules les suggestions qui reprennent les mots de la requête sont gardées, et il en faut au moins 3.</td>
+          </tr>
+          <tr>
+            <td class="name">Title et méta suggérés<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Rendre le résultat Google plus clair et plus attirant.</td>
+            <td class="how"><span class="src">IA</span> Proposition de Title (45 à 60 caractères) et de méta description (130 à 155), en signalant tout mot qui n'apparaît pas dans la page, pour ne rien promettre de faux.</td>
+          </tr>
+          <tr>
+            <td class="name">Lisibilité, liens dans le texte, fraîcheur<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Confort de lecture, liens utiles vers le reste du site, contenu à jour.</td>
+            <td class="how"><span class="src">Mesuré</span> Longueur des paragraphes et des phrases, liens au libellé vague (« en savoir plus »), années dépassées dans le texte.</td>
+          </tr>
+          <tr>
+            <td class="name">Expérience vécue et originalité<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Google valorise le vécu de l'auteur et ce qu'une page apporte de plus qu'un texte générique.</td>
+            <td class="how"><span class="src">IA</span> Repérage, avec des extraits copiés de la page, des retours de terrain et des passages génériques. Sans objet pour les pages de contact et utilitaires.</td>
+          </tr>
+          <tr>
+            <td class="name">Cohérence du site<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Repérer les incohérences d'une page à l'autre.</td>
+            <td class="how"><span class="src">Mesuré</span> Titres et descriptions en double, chiffres-clés contradictoires. <span class="src">IA</span> Une analyse de l'ensemble des piliers repère les recoupements et les types de pages manquants.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================================================== GEO -->
+  <section id="geo" data-filterable>
+    <h2>3. GEO : visibilité dans les moteurs de réponse IA</h2>
+    <p class="section-intro">Calculé sur les pages piliers. Le GEO (Generative Engine Optimization) mesure si une IA comme ChatGPT, Perplexity ou Google AI Overviews peut lire la page, comprendre de quoi elle parle et en citer des passages. Ces poids sont des choix éditoriaux : ils n'ont pas encore été vérifiés sur des citations réelles.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nom</th><th>Description</th><th>Mise en place</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">Accès des robots IA<br><span class="badge b-score">15 pts</span></td>
+            <td class="desc">Un site fermé aux robots des IA ne peut pas être cité par elles. C'est une condition d'accès, pas une preuve de citation.</td>
+            <td class="how"><span class="src">Mesuré</span> Lecture du fichier robots.txt pour chaque robot : GPTBot (OpenAI) 6 pts, ClaudeBot (Anthropic) 6 pts, PerplexityBot 3 pts. Un blocage par le pare-feu du site est aussi testé et signalé comme « probable », sans retirer de points.</td>
+          </tr>
+          <tr>
+            <td class="name">Citabilité<br><span class="badge b-score">40 pts</span></td>
+            <td class="desc">Une IA reprend plus volontiers des passages qui se comprennent seuls, répondent à une question et contiennent un fait vérifiable.</td>
+            <td class="how"><span class="src">IA</span> L'IA copie des extraits de la page. <span class="src">Mesuré</span> Le code ne garde que ceux qu'il retrouve mot pour mot, puis compte :
+              <ul>
+                <li>passages citables de 80 à 400 caractères : 1 = 8 pts, 2 = 12 pts, 3 = 16 pts ;</li>
+                <li>une phrase qui dit clairement ce que propose la page : 8 pts ;</li>
+                <li>un fait précis qui contient un chiffre : 8 pts ;</li>
+                <li>des sous-titres formulés en questions : 2 ou plus = 8 pts, 1 = 4 pts.</li>
+              </ul>
+              Sans objet pour les pages de contact et utilitaires : retiré du calcul.</td>
+          </tr>
+          <tr>
+            <td class="name">Sources d'autorité<br><span class="badge b-score">5 pts</span></td>
+            <td class="desc">Des liens vers des sources reconnues renforcent la crédibilité. Signal faible.</td>
+            <td class="how"><span class="src">Mesuré</span> Liens vers des sites reconnus (sites publics en .gouv.fr, Insee, Wikipédia, OMS…). 2 ou plus : 5 pts ; 1 : 3 pts ; aucun : 1 pt.</td>
+          </tr>
+          <tr>
+            <td class="name">Données structurées Schema.org<br><span class="badge b-score">25 pts</span></td>
+            <td class="desc">Un balisage invisible qui dit aux moteurs qui est l'entreprise ou de quoi parle la page (organisation, établissement, article, produit…).</td>
+            <td class="how"><span class="src">Mesuré</span> Lecture du balisage dans le code de la page. S'il manque, la page est aussi ouverte dans un vrai navigateur Chrome pour voir le balisage ajouté par JavaScript. Décrit une entité : 25 pts ; seulement la structure du site : 10 pts ; balisage sans type : 5 pts ; rien : 0.</td>
+          </tr>
+          <tr>
+            <td class="name">Cohérence des coordonnées (NAP)<br><span class="badge b-score">15 pts</span></td>
+            <td class="desc">Un nom, une adresse et un téléphone identiques partout renforcent l'identité de l'entreprise, surtout pour le référencement local.</td>
+            <td class="how"><span class="src">Mesuré</span> Téléphones et adresses lus sur tout le site. Téléphone présent sur le site : 5 pts ; adresse présente : 5 pts ; coordonnées de la page conformes à son propre balisage : 5 pts. Si la page n'a pas de balisage à comparer, ces 5 pts sont retirés du calcul. Si le site n'affiche aucune coordonnée, le critère est retiré, sauf pour un établissement local, qui reçoit 0.</td>
+          </tr>
+          <tr>
+            <td class="name">Fichier llms.txt<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Format proposé pour présenter un site aux IA.</td>
+            <td class="how"><span class="src">Mesuré</span> Présence et format du fichier affichés. Hors score : aucun grand moteur n'a confirmé l'utiliser.</td>
+          </tr>
+          <tr>
+            <td class="name">Balisage suggéré<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Donner un balisage Schema.org prêt à adapter.</td>
+            <td class="how">Généré selon le rôle de la page à partir des informations connues. Les champs inconnus restent marqués « [À COMPLÉTER] » : rien n'est inventé.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================================================== POSITIONNEMENT -->
+  <section id="positionnement" data-filterable>
+    <h2>4. Positionnement Google</h2>
+    <p class="section-intro">Cet onglet ne donne pas de note. Il mesure la place réelle des pages dans Google, à la demande de l'utilisateur. Ses résultats servent à confirmer la requête cible et à mesurer la cannibalisation du pilier éditorial.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nom</th><th>Description</th><th>Mise en place</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">Position de la page<br><span class="badge b-ind">Influence le score</span></td>
+            <td class="desc">Savoir où la page se classe réellement dans Google sur sa requête cible.</td>
+            <td class="how"><span class="src">Google</span> Recherche sur google.fr, en français, sans personnalisation. Première page de résultats ; si la page n'y est pas, pages 2 et 3 (positions 11 à 30). Jusqu'à 3 recherches par page : la requête cible et 2 autres recherches génériques proposées par l'IA. Une variation de plus de 3 places par rapport au relevé précédent déclenche une seconde mesure. Deux sources possibles : un navigateur Chrome local (usage personnel, contraire aux conditions d'utilisation de Google) ou l'API payante Serper.dev.</td>
+          </tr>
+          <tr>
+            <td class="name">Recherches génériques mesurées<br><span class="badge b-ind">Influence le score</span></td>
+            <td class="desc">Savoir si le site sort sur les recherches de ses prospects, et pas seulement sur son propre nom.</td>
+            <td class="how"><span class="src">Google</span> Position de la page sur chaque recherche générique mesurée, avec la mention « suggérée par Google ». L'utilisateur peut en faire la requête cible d'un clic. Si la requête cible n'est ni suggérée par Google ni retrouvée dans les résultats alors que la page sort sur une autre recherche, celle-ci devient la cible et la page est analysée de nouveau.</td>
+          </tr>
+          <tr>
+            <td class="name">Historique des positions<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Suivre les progrès d'un audit à l'autre.</td>
+            <td class="how">Chaque relevé (date, requête, source, position) est conservé, 30 par page toutes requêtes confondues, et repris à l'audit suivant.</td>
+          </tr>
+          <tr>
+            <td class="name">Concurrents et sections manquantes<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Voir qui se classe devant et ce que leurs pages traitent en plus.</td>
+            <td class="how"><span class="src">Google</span> Lecture des 3 premiers concurrents : sous-titres qui reviennent chez au moins deux d'entre eux et absents de la page, longueur moyenne, domaines qui reviennent sur plusieurs requêtes.</td>
+          </tr>
+          <tr>
+            <td class="name">Pack local et « Autres questions posées »<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">La carte des établissements compte autant que la position pour une recherche locale. Les questions des internautes donnent des idées de sous-titres.</td>
+            <td class="how"><span class="src">Google</span> Relevés sur la première page de résultats et affichés dans l'onglet de la page.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================================================== BACKLINKS -->
+  <section id="backlinks" data-filterable>
+    <h2>4 bis. Backlinks</h2>
+    <p class="section-intro">Cet onglet ne donne pas de note. Il liste les sites qui font un lien vers le site audité, relevés pendant le crawl.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nom</th><th>Description</th><th>Mise en place</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name">Domaines référents<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Les sites qui citent le site audité par un lien : un signal de popularité et de notoriété.</td>
+            <td class="how"><span class="src">Mesuré</span> Graphe de liens public de Common Crawl, une exploration gratuite d'une partie du web, préparé sur la machine et interrogé en moins d'une seconde. Il donne seulement les domaines, avec plusieurs semaines de retard, et ne voit pas tout le web : les vrais totaux sont plus élevés.</td>
+          </tr>
+          <tr>
+            <td class="name">Liens vérifiés<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Savoir quelle page fait le lien, avec quel texte, et si le lien est suivi par Google.</td>
+            <td class="how"><span class="src">Mesuré</span> Pour les 20 premiers domaines, lecture de leur page d'accueil et de quelques pages de partenaires, références ou mentions légales. Un lien non retrouvé est souvent sur une page plus profonde : ce n'est pas une erreur.</td>
+          </tr>
+          <tr>
+            <td class="name">Évolution<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Suivre les sites gagnés et perdus d'un audit à l'autre.</td>
+            <td class="how">Comparaison avec l'audit précédent du même site.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================================================== LIMITES -->
+  <section id="limites">
+    <h2>5. Fiabilité et limites</h2>
+    <div class="note">
+      <strong>Stabilité des notes de l'IA</strong>
+      Pour mesurer la stabilité, chaque page pilier d'un site test a été analysée 3 fois, sur 6 pages. Sur les critères mesurés par le code (zones chaudes, citabilité), les notes ne bougent presque plus : 0 point d'écart sur les zones chaudes, 4 points sur 40 au plus pour la citabilité. Les critères jugés par l'IA varient au plus d'un palier de la grille, par exemple 15 au lieu de 20 sur l'intention. L'échantillon est petit : ces chiffres sont indicatifs.
+    </div>
+    <div class="note">
+      <strong>Contrôles automatiques</strong>
+      35 tests vérifient que le code applique bien les règles de ce document : canonique, redirections, coordonnées, dénominateurs, citabilité, cannibalisation, choix des requêtes sans la marque, moyennes du site.
+    </div>
+    <div class="note warn">
+      <strong>Ce qui reste à valider</strong>
+      <ul>
+        <li><strong>Les poids des critères</strong> sont des choix fondés sur la documentation de Google. Ils n'ont pas encore été comparés aux positions réelles. Il faut pour cela mesurer au moins 30 pages d'un même site.</li>
+        <li><strong>La source payante de positions Google</strong> (Serper.dev) n'a pas encore été essayée avec une vraie clé.</li>
+        <li><strong>Les synonymes</strong> ne sont pas reconnus dans les zones chaudes.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===================================================== GLOSSAIRE -->
+  <section id="glossaire">
+    <h2>Glossaire</h2>
+    <div class="card">
+      <dl class="glossary">
+        <dt>Requête cible</dt><dd>La recherche Google sur laquelle une page doit se positionner, par exemple « résidence senior Lyon ».</dd>
+        <dt>Page pilier</dt><dd>Page stratégique choisie par l'utilisateur, analysée en profondeur par l'IA.</dd>
+        <dt>Title</dt><dd>Le titre de la page affiché dans l'onglet du navigateur et en bleu dans les résultats Google.</dd>
+        <dt>Méta description</dt><dd>Le court texte sous le titre dans les résultats Google.</dd>
+        <dt>H1, H2, H3</dt><dd>Le titre principal et les sous-titres d'une page, dans l'ordre d'importance.</dd>
+        <dt>robots.txt</dt><dd>Fichier à la racine du site qui dit aux robots quelles pages ils peuvent visiter.</dd>
+        <dt>Sitemap</dt><dd>Fichier qui liste les pages du site pour aider les moteurs à les trouver.</dd>
+        <dt>Balise canonique</dt><dd>Indique l'adresse de référence d'une page quand plusieurs adresses affichent le même contenu.</dd>
+        <dt>Redirection 301 / 302</dt><dd>Envoi automatique vers une autre adresse ; 301 est définitive, 302 temporaire.</dd>
+        <dt>Schema.org</dt><dd>Vocabulaire de balisage invisible qui décrit l'entreprise ou le contenu aux moteurs.</dd>
+        <dt>E-E-A-T</dt><dd>Expérience, expertise, autorité et fiabilité : les critères de confiance décrits par Google.</dd>
+        <dt>NAP</dt><dd>Name, Address, Phone : nom, adresse et téléphone de l'entreprise.</dd>
+        <dt>GEO</dt><dd>Generative Engine Optimization : optimisation pour les moteurs de réponse à base d'IA.</dd>
+        <dt>SERP</dt><dd>La page de résultats d'une recherche Google.</dd>
+        <dt>Cannibalisation</dt><dd>Plusieurs pages d'un même site en concurrence sur la même recherche.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <footer>
+    Document établi à partir de la documentation technique d'Auditly (docs/tableau-metriques.md), mise à jour le 28 octobre 2026.
+  </footer>
+</main>
+
+<script>
+  (function () {
+    var input = document.getElementById('filter');
+    if (!input) return;
+    input.addEventListener('input', function () {
+      var q = input.value.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      document.querySelectorAll('section[data-filterable]').forEach(function (section) {
+        var visible = 0;
+        section.querySelectorAll('tbody tr').forEach(function (row) {
+          var text = row.textContent.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+          var match = !q || text.indexOf(q) !== -1;
+          row.classList.toggle('hidden', !match);
+          if (match) visible++;
+        });
+        section.classList.toggle('hidden', q !== '' && visible === 0);
+      });
+      document.querySelectorAll('section:not([data-filterable])').forEach(function (section) {
+        section.classList.toggle('hidden', q !== '');
+      });
+    });
+  })();
+</script>
+</body>
+</html>

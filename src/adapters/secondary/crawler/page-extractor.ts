@@ -179,8 +179,9 @@ export class PageExtractor {
         try {
           const resolved = new URL(href, baseHref ? new URL(baseHref, url).href : url);
           if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return;
+          // Texte réduit aux espaces (lien autour d'une image) : on passe à l'alt, au libellé accessible, au title
           const text = (
-            $(el).text() ||
+            $(el).text().trim() ||
             $(el).find('img[alt]').first().attr('alt') ||
             $(el).attr('aria-label') ||
             $(el).attr('title') ||
