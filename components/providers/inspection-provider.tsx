@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react'
 
-export type InspectionTab = 'tech' | 'editorial' | 'geo'
+export type InspectionTab = 'essentials' | 'tech' | 'editorial' | 'geo' | 'serp'
 
 type InspectionContextType = {
   isOpen: boolean
@@ -20,7 +20,7 @@ const InspectionContext = createContext<InspectionContextType | null>(null)
 export function InspectionProvider({ children }: { children: React.ReactNode }) {
   const [isOpen, setIsOpen] = useState(false)
   const [pageId, setPageId] = useState<string | null>(null)
-  const [tab, setTabState] = useState<InspectionTab>('tech')
+  const [tab, setTabState] = useState<InspectionTab>('essentials')
   const [section, setSection] = useState<number | null>(null)
 
   // Check URL on initial mount or popstate
@@ -34,7 +34,7 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
       if (inspect) {
         setPageId(inspect)
         setIsOpen(true)
-        if (tabParam && ['tech', 'editorial', 'geo'].includes(tabParam)) {
+        if (tabParam && ['essentials', 'tech', 'editorial', 'geo', 'serp'].includes(tabParam)) {
           setTabState(tabParam)
         }
         const parsedSection = sectionParam !== null ? parseInt(sectionParam, 10) : NaN
@@ -48,7 +48,8 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
   }, [])
 
   const openInspection = (targetPageId: string, targetTab?: InspectionTab, targetSection?: number) => {
-    const selectedTab = targetTab || 'tech'
+    // Sans onglet demandé : « L'essentiel »
+    const selectedTab = targetTab || 'essentials'
     setPageId(targetPageId)
     setTabState(selectedTab)
     setSection(targetSection ?? null)

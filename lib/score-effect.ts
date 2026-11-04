@@ -25,12 +25,18 @@ const EXACT: Record<string, number> = {
   IMAGES_SEVERELY_MISSING_ALT: 5,
   // Éditorial
   EDITORIAL_BLOCKED_STATUS: 100,
-  INTENT_MISMATCH: 20,
-  CANNIBALIZATION_RISK: 20,
+  INTENT_MISMATCH: 15,
+  CANNIBALIZATION_RISK: 10,
   HOT_ZONES_UNOPTIMIZED: 15,
-  MISSING_TLDR_SUMMARY: 15,
+  MISSING_TLDR_SUMMARY: 10,
   SEMANTIC_GAPS: 20,
   LOW_EEAT_SIGNALS: 10,
+  // Qualité du contenu (15 pts) et lisibilité mesurée (5 pts)
+  NO_FIRST_HAND_EXPERIENCE: 5,
+  GENERIC_CONTENT: 10,
+  DENSE_PARAGRAPHS: 2,
+  LONG_SENTENCES: 2,
+  NO_LISTS_OR_TABLES: 1,
   // GEO
   GEO_BLOCKED_STATUS: 100,
   ROBOTS_TXT_BLOCKED_AI_BOTS: 15,
@@ -47,7 +53,7 @@ export function getScoreEffect(code: string): ScoreEffectInfo {
   if (code.startsWith('CWV_')) {
     return { affects: true, maxPoints: code.includes('LCP') ? 10 : code.includes('INP') ? 8 : 7 }
   }
-  // Tout le reste (longueur du H1, hiérarchie Hn, snippet, content gaps, fraîcheur, lisibilité, maillage dans le
-  // contenu, expérience vécue, cohérence du site…) est un diagnostic hors score
+  // Tout le reste (longueur du H1, hiérarchie Hn, snippet, content gaps, fraîcheur, maillage dans le contenu,
+  // cohérence du site…) est un diagnostic hors score
   return { affects: false, maxPoints: null }
 }

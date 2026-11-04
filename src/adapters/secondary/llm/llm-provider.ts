@@ -3,6 +3,8 @@ export interface LlmRequest {
   system: string;
   user: string;
   jsonSchema: Record<string, unknown>;
+  /** Modèle à essayer en premier pour cette demande (endpoint compatible OpenAI), avant les modèles habituels */
+  model?: string;
 }
 
 export interface LlmResponse {

@@ -1,6 +1,6 @@
 import type { PageRole } from '../types';
 
-export const PAGE_ROLES: PageRole[] = ['home', 'brand', 'contact', 'offer', 'case', 'article', 'hub', 'utility'];
+export const PAGE_ROLES: PageRole[] = ['home', 'brand', 'contact', 'offer', 'case', 'article', 'informational', 'hub', 'utility'];
 
 export const ROLE_LABEL: Record<PageRole, string> = {
   home: 'Accueil',
@@ -8,7 +8,8 @@ export const ROLE_LABEL: Record<PageRole, string> = {
   contact: 'Contact',
   offer: 'Offre / service',
   case: 'Réalisation / étude de cas',
-  article: 'Article / contenu informatif',
+  article: 'Article (daté, signé)',
+  informational: 'Contenu informatif (guide, FAQ)',
   hub: 'Liste / hub',
   utility: 'Utilitaire (légal, plan du site)'
 };
@@ -39,7 +40,10 @@ const HUB_SLUG =
   /^(actualites?|blog|news|journal|realisations?|references?|clients?|portfolio|projets?|etudes?(-observatoires?)?|ressources?|publications?|articles?|nos-articles|nos-realisations|temoignages?)$/;
 const CASE_HUB = /^(clients?|realisations?|references?|portfolio|projets?|temoignages?|nos-realisations)$/;
 const ARTICLE_HUB = /^(actualites?|blog|news|journal|articles?|nos-articles|magazine|etudes?(-observatoires?)?|publications?|ressources?)$/;
-const ARTICLE_PATH = /(blog|article|actualit|news|conseil|guide|ressource|etude|observatoire|magazine)/;
+const ARTICLE_PATH = /(blog|article|actualit|news|etude|observatoire|magazine)/;
+/** Contenus qui informent sans être des articles : guide, FAQ, glossaire, fiche pratique, page « comment… » */
+const INFO_PATH =
+  /(guide|faq|questions?|glossaire|lexique|comment-|qu-est-ce|quest-ce|pourquoi-|definition|fiche-pratique|tutoriel|tuto|conseils?|ressources?|savoir|aide)/;
 const CASE_PATH = /(etude-de-cas|cas-client|realisation|temoignage|reference)/;
 const BRAND_PATH =
   /(a-propos|about|qui-sommes|mission|groupe|equipe|histoire|valeurs|engagement|gouvernance|carriere|recrut|rejoindre|partenaire)/;
@@ -65,14 +69,18 @@ export function classifyPageRole(page: RoleInput): PageRole {
     return 'hub';
   }
 
+  // Article : contenu daté ou déclaré comme article ; une FAQ ou un guide non daté est un contenu informatif
   if (
     types.some((type) => type.includes('article') || type === 'blogposting') ||
     page.ogType === 'article' ||
-    page.hasPublishedMeta ||
-    ARTICLE_PATH.test(path)
+    page.hasPublishedMeta
   ) {
     return 'article';
   }
+  if (hasType('faqpage', 'howto', 'qapage') || INFO_PATH.test(path)) {
+    return page.hasPublicationDate && ARTICLE_PATH.test(path) ? 'article' : 'informational';
+  }
+  if (ARTICLE_PATH.test(path)) return 'article';
   if (CASE_PATH.test(path)) return 'case';
   if (page.hubChild) return page.hubChild;
   if (BRAND_PATH.test(path) || hasType('aboutpage')) return 'brand';

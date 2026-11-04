@@ -8,14 +8,15 @@ import {
   sleep
 } from './llm-provider';
 
-type ResponseMode = 'json_schema' | 'json_object';
+type ResponseMode = 'json_schema' | 'json_object' | 'prompt';
 
 /**
  * Fournisseur pour tout endpoint compatible avec l'API « chat completions » d'OpenAI :
  * OmniRoute, OpenRouter, LiteLLM, Ollama, vLLM, OpenAI, etc.
  *
  * Variables : LLM_BASE_URL (ex. http://localhost:20128/v1), LLM_MODEL, LLM_API_KEY (optionnelle en local),
- * LLM_FALLBACK_MODELS, LLM_MAX_TOKENS, LLM_MIN_INTERVAL_MS.
+ * LLM_FALLBACK_MODELS, LLM_MAX_TOKENS, LLM_MIN_INTERVAL_MS, LLM_RESPONSE_FORMAT (json_schema, json_object ou prompt :
+ * mode de départ, pour éviter les essais refusés à chaque démarrage quand l'endpoint n'accepte que `prompt`).
  */
 /** Réponse coupée par la limite de jetons (finish_reason = length) */
 class TruncatedResponseError extends Error {}
@@ -32,10 +33,13 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   private nextSlotAt = 0;
   private exhaustedUntil = new Map<string, number>();
   /**
-   * Mode de sortie JSON. `json_schema` (schéma imposé) est essayé d'abord ; si l'endpoint le refuse,
-   * on passe en `json_object` et le schéma est décrit dans le prompt. Mémorisé pour les appels suivants.
+   * Mode de sortie JSON. `json_schema` (schéma imposé) est essayé d'abord ; si l'endpoint le refuse, `json_object`
+   * (schéma décrit dans le prompt) ; s'il refuse aussi, `prompt` : aucun format imposé, schéma décrit dans le prompt
+   * (certains routeurs transmettent mal `response_format`, ex. OmniRoute vers gpt-oss). Mémorisé pour les appels suivants.
    */
-  private mode: ResponseMode = 'json_schema';
+  private mode: ResponseMode = (['json_schema', 'json_object', 'prompt'] as const).find(
+    (mode) => mode === process.env.LLM_RESPONSE_FORMAT?.trim()
+  ) ?? 'json_schema';
 
   isConfigured(): boolean {
     return Boolean(process.env.LLM_BASE_URL && process.env.LLM_MODEL);
@@ -69,7 +73,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
 
   private async post(model: string, request: LlmRequest, mode: ResponseMode, maxTokens = this.maxTokens): Promise<string> {
     const system =
-      mode === 'json_object'
+      mode !== 'json_schema'
         ? `${request.system}\n\nRéponds uniquement par un objet JSON valide, sans texte autour, qui respecte ce JSON Schema :\n${JSON.stringify(request.jsonSchema)}`
         : request.system;
 
@@ -88,13 +92,17 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         // 0 : réponses les plus stables possible d'une analyse à l'autre
         temperature: 0,
         max_tokens: maxTokens,
-        response_format:
-          mode === 'json_schema'
-            ? {
-                type: 'json_schema',
-                json_schema: { name: 'editorial_analysis', strict: true, schema: request.jsonSchema }
-              }
-            : { type: 'json_object' }
+        ...(mode === 'prompt'
+          ? {}
+          : {
+              response_format:
+                mode === 'json_schema'
+                  ? {
+                      type: 'json_schema',
+                      json_schema: { name: 'editorial_analysis', strict: true, schema: request.jsonSchema }
+                    }
+                  : { type: 'json_object' }
+            })
       }),
       signal: AbortSignal.timeout(OpenAiCompatibleProvider.REQUEST_TIMEOUT_MS)
     });
@@ -138,10 +146,11 @@ export class OpenAiCompatibleProvider implements LlmProvider {
           continue;
         }
         if (err instanceof LlmHttpError) {
-          // L'endpoint refuse le schéma imposé : repli unique sur le mode JSON simple
-          if (err.status === 400 && this.mode === 'json_schema' && /response_format|json_schema|schema/i.test(err.message)) {
-            console.warn('[LlmGateway] json_schema refusé par l’endpoint, repli sur json_object');
-            this.mode = 'json_object';
+          // L'endpoint refuse le format demandé : repli sur le mode JSON simple, puis sans format imposé
+          if (err.status === 400 && this.mode !== 'prompt' && /response_format|json_schema|json_object|schema/i.test(err.message)) {
+            const next: ResponseMode = this.mode === 'json_schema' ? 'json_object' : 'prompt';
+            console.warn(`[LlmGateway] ${this.mode} refusé par l’endpoint, repli sur ${next}`);
+            this.mode = next;
             attempt--;
             continue;
           }
@@ -161,14 +170,19 @@ export class OpenAiCompatibleProvider implements LlmProvider {
 
   async generate(request: LlmRequest): Promise<LlmResponse> {
     let lastError: unknown;
-    for (const model of this.models) {
+    const models = request.model ? Array.from(new Set([request.model, ...this.models])) : this.models;
+    for (const model of models) {
       if ((this.exhaustedUntil.get(model) ?? 0) > Date.now()) continue;
       try {
         return { text: await this.generateWithModel(model, request), model };
       } catch (err) {
         lastError = err;
+        // Modèle demandé pour cette seule demande (tri des mots-clés) refusé, même pour un accès révoqué (401, 403) :
+        // les modèles habituels prennent le relais
         const switchable =
-          err instanceof LlmHttpError && OpenAiCompatibleProvider.SWITCHABLE_STATUSES.includes(err.status);
+          err instanceof LlmHttpError &&
+          (OpenAiCompatibleProvider.SWITCHABLE_STATUSES.includes(err.status) ||
+            (model === request.model && (err.status === 401 || err.status === 403)));
         if (!switchable) throw err;
         console.warn(`[LlmGateway] ${model} indisponible (${(err as LlmHttpError).status}), modèle suivant`);
       }

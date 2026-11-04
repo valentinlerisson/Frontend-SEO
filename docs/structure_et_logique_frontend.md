@@ -1,3 +1,10 @@
+> **⚠️ Document partiellement obsolète (rédigé le 23-26/10/2026).** Plusieurs points ne correspondent plus au code :
+> l'exploration utilise un robot maison (fetch + Cheerio, pas Crawlee) ; l'historique des positions et des backlinks est
+> gardé d'un audit à l'autre ; l'IA passe par une passerelle OpenAI-compatible (OmniRoute, modèle réglé par
+> `LLM_MODEL`) ; l'éditorial est noté sur des requêtes notées issues de Google Ads Keyword Planner ; il n'y a plus de
+> requête visée saisie. Références à jour : `CLAUDE.md`, `docs/fonctionnalites_par_page.md`,
+> `docs/tableau-metriques.md`, `docs/Fichier.md`.
+
 # 🏗️ Architecture, Structure et Logique du Front-End — BigApp SEO
 
 Ce document détaille l'architecture globale, la hiérarchie des composants, le flux de données ainsi que la logique métier et technique mise en œuvre dans le front-end de la plateforme.

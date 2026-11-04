@@ -137,6 +137,7 @@ export function parseGoogleResults(html, startPosition = 1, options = {}) {
 /**
  * Éléments de la page de résultats hors liens organiques, relevés pour information (hors score) :
  *  - localPack : bloc de fiches d'établissements (carte « Lieux ») ;
+ *  - localPackEntries : établissements du bloc (nom, site web), 5 au plus, pour savoir si le site y figure ;
  *  - peopleAlsoAsk : questions du bloc « Autres questions posées ».
  * Repérage par attributs et libellés de Google : fragile, à revoir si Google change sa page.
  * `query` : requête recherchée. Google porte aussi l'attribut `data-q` sur d'autres éléments avec la requête
@@ -149,13 +150,40 @@ export function parseSerpFeatures(html, query = '') {
     $('[data-cid]').length > 0 ||
     $('a[href*="tbm=lcl"], a[href*="udm=1"]').length > 0 ||
     /Plus de lieux|Plus d.entreprises|Afficher plus de lieux/i.test(text);
+  // Fiches du pack local : nom (titre de la fiche) et lien « Site Web » (redirection Google décodée)
+  const localPackEntries = [];
+  const decode = (href) => {
+    try {
+      const url = new URL(href, 'https://www.google.fr');
+      return url.pathname === '/url' ? url.searchParams.get('q') || url.searchParams.get('url') || '' : url.href;
+    } catch {
+      return '';
+    }
+  };
+  $('[data-cid]').each((_, el) => {
+    if (localPackEntries.length >= 5) return;
+    const box = $(el);
+    const area = box.find('a[href]').length > 0 ? box : box.parent().parent();
+    const name = (box.find('[role="heading"]').first().text() || box.find('span').first().text() || box.text())
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    let website = '';
+    area.find('a[href]').each((__, a) => {
+      const label = `${$(a).text()} ${$(a).attr('aria-label') ?? ''}`;
+      if (!website && /site web|website/i.test(label)) website = decode($(a).attr('href') ?? '');
+    });
+    if (name && !localPackEntries.some((entry) => entry.name === name)) {
+      localPackEntries.push(website ? { name, website } : { name });
+    }
+  });
   const normalize = (value) => value.toLowerCase().replace(/\s+/g, ' ').trim();
   const questions = new Set();
   $('[data-q]').each((_, el) => {
     const question = ($(el).attr('data-q') ?? '').replace(/\s+/g, ' ').trim();
     if (question.length > 5 && /\?$/.test(question) && normalize(question) !== normalize(query)) questions.add(question);
   });
-  return { localPack, peopleAlsoAsk: Array.from(questions).slice(0, 8) };
+  return { localPack, localPackEntries, peopleAlsoAsk: Array.from(questions).slice(0, 8) };
 }
 
 /**

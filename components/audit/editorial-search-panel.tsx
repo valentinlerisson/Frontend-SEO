@@ -4,6 +4,10 @@ import { useState } from 'react'
 import { Bot, Check, Copy, RefreshCw } from 'lucide-react'
 import { useAudit } from '@/components/providers/audit-provider'
 import type { InspectionData } from '@/lib/audit-data'
+import { PageRoleGoal } from './page-role-goal'
+import { KeywordResearchPanel } from './keyword-research-panel'
+import { PageRewritePanel } from './page-rewrite-panel'
+import { QuerySetPanel } from './query-set-panel'
 
 const INTENT_LABEL = {
   INFORMATIONAL: 'Informationnelle',
@@ -56,15 +60,16 @@ export function EditorialSearchPanel({
   editorial: InspectionData['editorial']
 }) {
   const { auditDbId, refreshAudit } = useAudit()
-  const [draft, setDraft] = useState(editorial.targetKeyword)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const search = editorial.search
-  const candidates = search?.candidates ?? []
-  const fromCandidates = candidates.length > 0 && !search?.targetQuery.isBrand
+  // Requêtes notées, de la plus lourde à la plus légère ; analyse antérieure sans groupe : la requête cible
+  const querySet = editorial.querySet ?? []
+  const main = querySet[0]?.query ?? editorial.targetKeyword
+  const totalVolume = querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0)
 
-  const run = async (body: { targetQuery?: string | null; force?: boolean }) => {
+  const run = async (body: { force?: boolean }) => {
     if (!auditDbId) return
     setBusy(true)
     setError(null)
@@ -86,9 +91,6 @@ export function EditorialSearchPanel({
     }
   }
 
-  const trimmed = draft.trim()
-  const queryChanged = trimmed.length > 0 && trimmed !== editorial.targetKeyword
-
   return (
     <div className="space-y-3">
       {/* Synthèse : requête, rôle, intention comparée à Google, position mesurée */}
@@ -98,53 +100,48 @@ export function EditorialSearchPanel({
             <Bot className="size-4" />
           </span>
           <div className="min-w-0">
-            <p className="text-xs text-indigo-pale">
-              Requête visée{' '}
-              {editorial.queryConfidence === 'MANUAL' || editorial.isForcedTarget
-                ? '(saisie par vous)'
-                : fromCandidates
-                  ? editorial.queryConfidence === 'CONFIRMED'
-                    ? '(recherche générique proposée par l’IA, confirmée par Google)'
-                    : '(recherche générique proposée par l’IA)'
-                  : search?.targetQuery.isBrand
-                    ? '(requête de marque : page de contact ou utilitaire)'
-                    : editorial.queryConfidence === 'CONFIRMED'
-                      ? '(déduite par l’IA, retrouvée dans Google)'
-                      : '(déduite par l’IA)'}
-              {editorial.queryKept && editorial.queryConfidence !== 'MANUAL' && !editorial.isForcedTarget
-                ? ' · conservée d’une analyse à l’autre'
-                : ''}
-            </p>
-            <p className="text-base font-semibold text-foreground">« {editorial.targetKeyword} »</p>
-            {candidates.length > 1 && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Autres recherches proposées, sans le nom de la marque :{' '}
-                {candidates
-                  .filter((candidate) => candidate.query !== editorial.targetKeyword)
-                  .map((candidate) => `« ${candidate.query} »${candidate.suggestedByGoogle ? ' (suggérée par Google)' : ''}`)
-                  .join(', ')}
-                . Leur position se mesure dans l’onglet Positionnement.
-              </p>
+            {search?.problem && (
+              <>
+                <p className="text-xs text-indigo-pale">Problématique de la page (IA)</p>
+                <p className="mb-2 text-sm text-foreground">{search.problem}</p>
+              </>
             )}
-            {editorial.queryConfidence === 'INFERRED' && (
-              <p className="mt-1 text-xs text-amber-soft">
-                Confiance faible : cette requête vient de la page elle-même et n’a pas été retrouvée dans Google.
-                Intention et zones chaudes sont exclues du score tant que vous ne saisissez pas la requête visée.
+            <p className="text-xs text-indigo-pale">
+              {search?.targetQuery.isBrand
+                ? 'Requête notée (page de contact ou utilitaire : recherche du nom du site)'
+                : querySet.length > 1
+                  ? `Requêtes notées · ${querySet.length} recherches${totalVolume > 0 ? ` · ${totalVolume.toLocaleString('fr-FR')}/mois` : ''}`
+                  : 'Requête notée'}
+            </p>
+            <p className="text-base font-semibold text-foreground">« {main} »</p>
+            {querySet.length > 1 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Puis{' '}
+                {querySet
+                  .slice(1)
+                  .map((entry) => `« ${entry.query} »${entry.volume !== undefined ? ` (${entry.volume.toLocaleString('fr-FR')}/mois)` : ''}`)
+                  .join(', ')}
+                . Détail et choix des requêtes ci-dessous.
               </p>
             )}
           </div>
         </div>
         <dl className="grid gap-2 sm:grid-cols-2">
-          <div className="rounded-lg bg-inset p-2.5">
-            <dt className="text-[11px] uppercase tracking-wide text-indigo-pale">Rôle de la page</dt>
-            <dd className="font-semibold">{editorial.roleLabel}</dd>
-            <dd className="text-xs text-muted-foreground">
-              {editorial.roleSource === 'manual' && 'Modifié par vous'}
-              {editorial.roleSource === 'ai' && `Corrigé par l’IA${editorial.roleReason ? ` : ${editorial.roleReason}` : ''}`}
-              {editorial.roleSource === 'auto' && 'Détecté automatiquement, modifiable dans Subpages'}
-            </dd>
+          <div className="rounded-lg bg-inset p-3 sm:col-span-2">
+            <PageRoleGoal
+              pageId={pageId}
+              path="cette page"
+              role={editorial.role}
+              roleSource={editorial.roleSource}
+              roleReason={editorial.roleReason}
+              goal={editorial.goal}
+              goalSource={editorial.goalSource}
+              goalStale={editorial.goalStale}
+              variant="full"
+              disabled={busy}
+            />
           </div>
-          <div className="rounded-lg bg-inset p-2.5">
+          <div className="rounded-lg bg-inset p-2.5 sm:col-span-2">
             <dt className="text-[11px] uppercase tracking-wide text-indigo-pale">Position Google</dt>
             {editorial.position ? (
               <>
@@ -204,56 +201,33 @@ export function EditorialSearchPanel({
         </div>
       )}
 
-      <div className="rounded-xl border border-shade-33 bg-shade-1e p-3.5">
-        <label htmlFor="target-query" className="mb-1.5 block text-xs font-semibold text-foreground">
-          Requête visée par cette page
-        </label>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <input
-            id="target-query"
-            type="text"
-            value={draft}
-            maxLength={120}
-            onChange={(e) => setDraft(e.target.value)}
-            disabled={busy}
-            className="w-full rounded-lg border border-shade-44 bg-shade-16 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-          />
-          <button
-            type="button"
-            disabled={busy || !queryChanged}
-            onClick={() => run({ targetQuery: trimmed })}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition-colors hover:bg-[#e0d100] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} />
-            Appliquer et ré-analyser
-          </button>
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => run({ force: true })}
-            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-          >
-            Ré-analyser
-          </button>
-          {editorial.isForcedTarget && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setDraft('')
-                run({ targetQuery: null })
-              }}
-              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-            >
-              Revenir à la détection automatique
-            </button>
-          )}
-          {busy && <span className="text-muted-foreground">Analyse en cours, cela peut prendre une minute…</span>}
-        </div>
-        {error && <p className="mt-2 text-xs text-[#ef4444]">{error}</p>}
+      {editorial.querySet && editorial.querySet.length > 0 && (
+        <QuerySetPanel key={editorial.querySet.map((entry) => entry.query).join('|')} pageId={pageId} editorial={editorial} />
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-shade-33 bg-shade-1e p-3 text-xs">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => run({ force: true })}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-shade-44 px-3 py-1.5 font-semibold text-foreground transition-colors hover:border-primary disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} />
+          Ré-analyser la page
+        </button>
+        <span role="status" className="text-muted-foreground">
+          {busy
+            ? 'Analyse en cours, cela peut prendre une minute…'
+            : 'L’IA relit la page, choisit ses mots-clés, Keyword Planner donne leurs volumes, puis la page est notée.'}
+        </span>
+        {error && <p className="w-full text-[#ef4444]">{error}</p>}
       </div>
+
+      <KeywordResearchPanel pageId={pageId} keywords={editorial.keywords} scored={querySet.map((entry) => entry.query)} />
+
+      {search && (
+        <PageRewritePanel pageId={pageId} rewrite={editorial.rewrite} keywords={querySet.map((entry) => entry.query)} />
+      )}
 
       {search && (
         <div className="space-y-2.5 rounded-xl border border-shade-33 bg-shade-1e p-3.5">

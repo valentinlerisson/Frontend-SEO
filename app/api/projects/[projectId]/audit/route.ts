@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { AuditPresenter } from '@/adapters/primary/presenters/audit-presenter';
+import { AuditService } from '@/core/services/audit-service';
 
 export async function GET(
   _req: NextRequest,
@@ -8,6 +9,13 @@ export async function GET(
 ) {
   try {
     const { projectId } = await params;
+    // Travaux interrompus (serveur arrêté pendant une exploration, une analyse IA ou une mesure Google) remis en état
+    const latest = await prisma.audit.findFirst({
+      where: { project: { OR: [{ id: projectId }, { domain: projectId }] } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    })
+    if (latest) await AuditService.recoverInterrupted(latest.id).catch((err) => console.error('Reprise après interruption impossible:', err))
 
     // Lecture seule : un crawl ne démarre que via POST /api/audits/launch
     const project = await prisma.project.findFirst({
@@ -41,6 +49,8 @@ export async function GET(
       id: project.id,
       domain: project.domain,
       name: project.name,
+      zonesRaw: project.zonesRaw,
+      pageZonesRaw: project.pageZonesRaw,
     });
 
     return NextResponse.json({

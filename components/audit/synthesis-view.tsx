@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import type { ReactNode } from 'react'
-import { ArrowUpRight, Bot, Cpu, FileText, Globe2, Link2, Lock, Sparkles } from 'lucide-react'
+import { ArrowUpRight, Bot, Cpu, FileText, Globe2, Link2, Lock, MapPinned, Sparkles } from 'lucide-react'
 import { CircularGauge } from './score-gauges'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
@@ -13,6 +13,8 @@ import { pickPriorities } from '@/lib/issue-impact'
 import { scoreTone } from '@/lib/score-tone'
 import { backlinkSummary, releaseLabel } from '@/lib/backlink-labels'
 import type { BacklinkReport } from '@/core/domain/types'
+import type { LocalVisibility } from '@/lib/audit-data'
+import { describeCrawlScope } from '@/core/domain/crawl-scope'
 
 
 export function SynthesisView({ projectId }: { projectId: string }) {
@@ -35,6 +37,9 @@ export function SynthesisView({ projectId }: { projectId: string }) {
             {audit.domain} · {audit.crawlStats.crawledPages} pages explorées
             {!audit.isLocked && ` · ${audit.pillarPages.length} pages piliers analysées`}
           </p>
+          {audit.crawlScope && (
+            <p className="mt-0.5 text-xs text-muted-foreground">Périmètre : {describeCrawlScope(audit.crawlScope)}</p>
+          )}
         </div>
         <ExportPdfButton />
       </div>
@@ -124,6 +129,9 @@ export function SynthesisView({ projectId }: { projectId: string }) {
       </section>
 
       <PopularityCard projectId={projectId} report={audit.backlinks} />
+      {audit.localVisibility && audit.localVisibility.zones.length + audit.localVisibility.establishments.length > 0 && (
+        <LocalCard projectId={projectId} data={audit.localVisibility} />
+      )}
 
       {/* Priorités et conseil */}
       <section
@@ -219,6 +227,55 @@ export function SynthesisView({ projectId }: { projectId: string }) {
   )
 }
 
+/** Visibilité locale (hors score) : zones couvertes par une page, visibilité mesurée depuis chaque zone, établissements */
+function LocalCard({ projectId, data }: { projectId: string; data: LocalVisibility }) {
+  return (
+    <section aria-label="Visibilité locale" className="glass-card rounded-2xl border p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-base font-bold text-foreground">
+          <MapPinned className="size-4 text-muted-foreground" aria-hidden="true" />
+          Visibilité locale
+          <span className="rounded-full border border-shade-44 px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
+            Hors score
+          </span>
+        </h2>
+        <Link
+          href={`/projets/${projectId}/positionnement`}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-primary-ink hover:underline"
+        >
+          Voir par zone
+          <ArrowUpRight className="size-3.5" aria-hidden="true" />
+        </Link>
+      </div>
+      {data.zones.length > 0 && (
+        <ul className="mt-3 grid gap-2 sm:grid-cols-3">
+          {data.zones.slice(0, 6).map(({ zone, coverage, measures }) => (
+            <li key={zone.id} className="rounded-xl bg-inset p-3 text-sm">
+              <span className="block font-semibold text-foreground">{zone.label}</span>
+              <span className="block text-xs text-muted-foreground">
+                {measures.measured > 0
+                  ? `Visible sur ${measures.visible} recherche(s) sur ${measures.measured}${measures.best ? `, au mieux n°${measures.best.rank}` : ''}`
+                  : 'Pas encore mesurée dans Google'}
+              </span>
+              <span className={`block text-xs ${coverage.length === 0 ? 'text-sky-soft' : 'text-muted-foreground'}`}>
+                {coverage.length === 0 ? 'Aucune page dédiée' : `${coverage.length} page(s) dédiée(s)`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {data.establishments.length > 0 && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {data.establishments.length} établissement(s) repéré(s) ·{' '}
+          {data.establishments.filter((item) => item.zoneLabel).length} rattaché(s) à une zone ·{' '}
+          {data.establishments.filter((item) => item.schemaConsistent === false).length} avec des coordonnées différentes
+          du balisage
+        </p>
+      )}
+    </section>
+  )
+}
+
 /** Popularité du site (hors score) : domaines référents relevés pendant le crawl, et évolution depuis l'audit précédent */
 function PopularityCard({ projectId, report }: { projectId: string; report?: BacklinkReport }) {
   const summary = report?.status === 'DONE' ? backlinkSummary(report) : undefined
@@ -262,18 +319,13 @@ function PopularityCard({ projectId, report }: { projectId: string; report?: Bac
             </dd>
           </div>
           <div className="rounded-xl bg-inset p-3">
-            <dt className="text-xs text-muted-foreground">Depuis l’audit précédent</dt>
-            {report.changes ? (
-              <dd className="text-2xl font-extrabold text-foreground">
-                <span className="text-green-soft">+{report.changes.added.length}</span>{' '}
-                <span className="text-sky-soft">−{report.changes.lost.length}</span>
-                <span className="block text-xs font-normal text-muted-foreground">
-                  domaines gagnés et perdus depuis le {new Date(report.changes.previousDate).toLocaleDateString('fr-FR')}
-                </span>
-              </dd>
-            ) : (
-              <dd className="text-sm text-muted-foreground">Premier relevé : l’évolution s’affichera au prochain audit.</dd>
-            )}
+            <dt className="text-xs text-muted-foreground">Pages du site liées</dt>
+            <dd className="text-2xl font-extrabold text-foreground">
+              {summary.targets > 0 ? summary.targets : '—'}
+              <span className="block text-xs font-normal text-muted-foreground">
+                {summary.targets > 0 ? 'pages avec au moins un lien vérifié' : 'aucun lien retrouvé'}
+              </span>
+            </dd>
           </div>
         </dl>
       )}

@@ -1,5 +1,5 @@
 import type { SynthesisAdvice } from '@/lib/audit-data';
-import type { EditorialEvaluation } from '@/core/domain/types';
+import type { EditorialCriterion, EditorialEvaluation } from '@/core/domain/types';
 
 export interface AnalyzedPillar {
   path: string;
@@ -10,50 +10,75 @@ export interface AnalyzedPillar {
 
 type Criterion = {
   label: string;
-  max: number;
-  score: (e: EditorialEvaluation) => number;
+  key: EditorialCriterion;
+  /** Ancien palier, pour une analyse enregistrée avant le barème actuel */
+  legacy: (e: EditorialEvaluation) => { score: number; max: number } | null;
   advice: (e: EditorialEvaluation) => string;
 };
 
-/** Critères du score éditorial, avec leur barème (voir docs/Fichier.md §4.2) */
+/** Critères du score éditorial (voir docs/tableau-metriques.md) */
 const CRITERIA: Criterion[] = [
   {
     label: 'la correspondance avec l’intention de recherche',
-    max: 20,
-    score: (e) => e.intentMatch.score,
+    key: 'intent',
+    legacy: (e) => ({ score: e.intentMatch.score, max: 20 }),
     advice: (e) => e.intentMatch.actionableAdvice,
   },
   {
     label: 'l’unicité du ciblage entre vos pages',
-    max: 20,
-    score: (e) => e.cannibalizationRisk.score,
+    key: 'cannibal',
+    legacy: (e) => ({ score: e.cannibalizationRisk.score, max: 20 }),
     advice: (e) => e.cannibalizationRisk.actionableAdvice,
   },
   {
-    label: 'le placement de la requête dans le Title, le H1 et l’introduction',
-    max: 15,
-    score: (e) => e.hotZonesOptimization.score,
+    label: 'la couverture des recherches (requête principale aux bons endroits, recherches secondaires reprises)',
+    key: 'hotZones',
+    legacy: (e) => ({ score: e.hotZonesOptimization.score, max: 15 }),
     advice: (e) => e.hotZonesOptimization.actionableAdvice,
   },
   {
     label: 'la réponse donnée dès le début de la page',
-    max: 15,
-    score: (e) => e.primaryContentTldr.score,
+    key: 'opening',
+    legacy: (e) => ({ score: e.primaryContentTldr.score, max: 15 }),
     advice: (e) => e.primaryContentTldr.actionableAdvice,
   },
   {
-    label: 'la couverture du sujet et le vocabulaire métier',
-    max: 20,
-    score: (e) => e.semanticDepth.score,
+    label: 'ce que la page doit faire (couvrir le sujet, convaincre, faire agir, rassurer, raconter)',
+    key: 'goal',
+    legacy: (e) => ({ score: e.semanticDepth.score, max: 20 }),
     advice: (e) => e.semanticDepth.actionableAdvice,
   },
   {
     label: 'les signaux de confiance et d’expertise',
-    max: 10,
-    score: (e) => e.eeatSignals.score,
+    key: 'eeat',
+    // Ancienne note : E-E-A-T noté seulement pour un article, sinon sans objet
+    legacy: (e) => (e.eeatSignals.score > 0 ? { score: e.eeatSignals.score, max: 10 } : null),
     advice: (e) => e.eeatSignals.actionableAdvice,
   },
+  {
+    label: 'la qualité du contenu (vécu, données et cas propres)',
+    key: 'quality',
+    legacy: () => null,
+    advice: (e) => [e.quality?.firstHandExperience.advice, e.quality?.informationGain.advice].filter(Boolean).join(' '),
+  },
+  {
+    label: 'la lisibilité du texte',
+    key: 'readability',
+    legacy: () => null,
+    advice: () => 'Découper les paragraphes longs et ajouter des listes là où le contenu s’y prête.',
+  },
 ];
+
+/** Part des points obtenus sur un critère pour une page ; null si le critère n'est pas retenu pour elle */
+function ratioOf(criterion: Criterion, evaluation: EditorialEvaluation): number | null {
+  const points = evaluation.points;
+  if (points) {
+    const item = points[criterion.key];
+    return item && item.max > 0 ? item.earned / item.max : null;
+  }
+  const legacy = criterion.legacy(evaluation);
+  return legacy ? legacy.score / legacy.max : null;
+}
 
 /**
  * Conseil de synthèse, déterministe (aucun appel IA supplémentaire) : il s'appuie sur les analyses
@@ -62,15 +87,17 @@ const CRITERIA: Criterion[] = [
 export function buildSynthesisAdvice(pillars: AnalyzedPillar[]): SynthesisAdvice | null {
   if (pillars.length === 0) return null;
 
-  const stats = CRITERIA.map((criterion) => {
-    const rows = pillars.map((pillar) => ({
-      pillar,
-      ratio: criterion.score(pillar.evaluation) / criterion.max,
-    }));
+  // Seules les pages pour lesquelles le critère est retenu comptent dans sa moyenne
+  const stats = CRITERIA.flatMap((criterion) => {
+    const rows = pillars
+      .map((pillar) => ({ pillar, ratio: ratioOf(criterion, pillar.evaluation) }))
+      .filter((row): row is { pillar: AnalyzedPillar; ratio: number } => row.ratio !== null);
+    if (rows.length === 0) return [];
     const average = rows.reduce((sum, row) => sum + row.ratio, 0) / rows.length;
     const worst = rows.reduce((min, row) => (row.ratio < min.ratio ? row : min));
-    return { criterion, average, worst };
+    return [{ criterion, average, worst }];
   });
+  if (stats.length === 0) return null;
 
   const weakest = stats.reduce((min, row) => (row.average < min.average ? row : min));
   const strongest = stats.reduce((max, row) => (row.average > max.average ? row : max));

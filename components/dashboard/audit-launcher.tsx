@@ -1,23 +1,22 @@
+import type { CrawlScopeChoice } from '@/components/providers/projects-provider'
 import { AuditUrlForm } from './audit-url-form'
 
 type AuditLauncherProps = {
-  firstName: string
-  onLaunch: (domain: string) => void
+  onLaunch: (domain: string, scope?: CrawlScopeChoice) => void
 }
 
-export function AuditLauncher({ firstName, onLaunch }: AuditLauncherProps) {
+/** Carte de lancement d'un audit : explique en une phrase ce qui sera mesuré */
+export function AuditLauncher({ onLaunch }: AuditLauncherProps) {
   return (
-    <section
-      aria-labelledby="welcome-title"
-      className="glass-card rounded-2xl border border-primary px-6 py-8 md:px-12 md:py-10"
-    >
-      <h1 id="welcome-title" className="text-3xl font-medium text-balance md:text-5xl">
-        Bonjour, {firstName}
-      </h1>
-      <p className="mt-3 text-base text-muted-foreground md:text-xl">
-        Prêt à lancer un nouvel audit ou reprendre une analyse en cours ?
+    <section aria-labelledby="launch-title" className="glass-card rounded-2xl border p-5 md:p-6">
+      <h2 id="launch-title" className="text-lg font-bold text-foreground">
+        Lancer un audit
+      </h2>
+      <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+        Auditly explore le site, note la technique de chaque page, puis le contenu et la visibilité dans les moteurs IA
+        des pages que vous jugez stratégiques.
       </p>
-      <AuditUrlForm onLaunch={onLaunch} className="mt-8" />
+      <AuditUrlForm onLaunch={onLaunch} showLabel withScope className="mt-4" />
     </section>
   )
 }

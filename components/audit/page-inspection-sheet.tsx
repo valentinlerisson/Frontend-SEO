@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   X,
   Bot,
@@ -13,8 +13,11 @@ import {
   Sparkles,
   Printer,
 } from 'lucide-react'
-import { SemiCircleGauge } from './score-gauges'
 import { PagePrintSheet } from './page-print-sheet'
+import { SerpInsights } from './serp-insights'
+import { InspectionEssentials } from './inspection-essentials'
+import { scoreTone } from '@/lib/score-tone'
+import { describePagePosition } from '@/lib/serp-labels'
 import { EditorialSearchPanel } from './editorial-search-panel'
 import { InspectionItemRow } from './inspection-item-row'
 import { PriorityList } from './priority-list'
@@ -23,19 +26,77 @@ import { SchemaSnippetBlock } from './schema-snippet-block'
 import { useInspection, type InspectionTab } from '@/components/providers/inspection-provider'
 import { useAudit } from '@/components/providers/audit-provider'
 
-/** Points sur lesquels le score est calculé : les critères non mesurés ou sans objet sont exclus */
-function CoverageNote({ coverage }: { coverage?: { measured: number; total: number } }) {
-  if (!coverage || coverage.measured >= coverage.total) return null
+/** Note d'un pilier en une ligne : chiffre, niveau écrit, points réellement mesurés */
+function PillarHeader({ label, score, coverage }: { label: string; score: number; coverage?: { measured: number; total: number } }) {
+  const tone = scoreTone(score)
   return (
-    <p className="mt-1 max-w-[200px] text-center text-[11px] text-muted-foreground">
-      Calculé sur {coverage.measured} des {coverage.total} points : critères non mesurés ou sans objet exclus
-    </p>
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-xl border border-shade-33 bg-shade-1e px-4 py-3">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-2xl font-extrabold tabular-nums" style={{ color: tone.textColor }}>
+        {score}
+        <span className="text-sm font-normal text-muted-foreground">/100</span>
+      </span>
+      <span className="text-sm font-semibold" style={{ color: tone.textColor }}>
+        {tone.label}
+      </span>
+      {coverage && coverage.measured < coverage.total && (
+        <span className="text-xs text-muted-foreground">
+          calculée sur {coverage.measured} des {coverage.total} points (critères non mesurables retirés)
+        </span>
+      )}
+    </div>
   )
 }
 
+const DRAWER_WIDTH_KEY = 'auditly:inspection-width'
+const DEFAULT_DRAWER_WIDTH = 820
+const MIN_DRAWER_WIDTH = 480
+
 export function PageInspectionSheet() {
   const { isOpen, pageId, tab, section, closeInspection, setTab } = useInspection()
-  const { audit, state, getInspection } = useAudit()
+  const { audit, state, getInspection, auditDbId, refreshAudit } = useAudit()
+
+  // Fiche imprimable montée seulement le temps de l'impression (sinon elle serait imprimée avec le rapport d'audit)
+  const [printing, setPrinting] = useState(false)
+  // Largeur du tiroir, réglable par la poignée de gauche (souris ou flèches du clavier) et mémorisée dans le navigateur
+  const [width, setWidth] = useState(DEFAULT_DRAWER_WIDTH)
+  useEffect(() => {
+    try {
+      const saved = Number(window.localStorage.getItem(DRAWER_WIDTH_KEY))
+      if (saved >= MIN_DRAWER_WIDTH) setWidth(saved)
+    } catch {
+      // stockage indisponible : largeur par défaut
+    }
+  }, [])
+  const resize = (next: number) => {
+    const clamped = Math.round(Math.min(window.innerWidth * 0.96, Math.max(MIN_DRAWER_WIDTH, next)))
+    setWidth(clamped)
+    try {
+      window.localStorage.setItem(DRAWER_WIDTH_KEY, String(clamped))
+    } catch {
+      // stockage indisponible : largeur gardée pour la session
+    }
+  }
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const move = (e: PointerEvent) => resize(window.innerWidth - e.clientX)
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+  const previousTitle = useRef('')
+  useEffect(() => {
+    if (!printing) return
+    const timer = window.setTimeout(() => {
+      window.print()
+      document.title = previousTitle.current
+      setPrinting(false)
+    }, 50)
+    return () => window.clearTimeout(timer)
+  }, [printing])
 
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>({
     '0': true,
@@ -69,7 +130,7 @@ export function PageInspectionSheet() {
         className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm"
       >
         <div className="absolute inset-0" onClick={closeInspection} />
-        <div className="relative z-10 flex h-full w-full max-w-2xl flex-col items-center justify-center gap-4 glass-panel border-l p-8 text-center">
+        <div className="relative z-10 flex h-full w-full max-w-4xl flex-col items-center justify-center gap-4 glass-panel border-l p-8 text-center">
           <p className="text-sm text-muted-foreground">Aucune donnée d’inspection pour cette page.</p>
           <button
             type="button"
@@ -85,10 +146,9 @@ export function PageInspectionSheet() {
 
   // Export PDF : la boîte de dialogue d'impression native utilise le titre du document comme nom de fichier
   const handleExportPdf = () => {
-    const previousTitle = document.title
+    previousTitle.current = document.title
     document.title = `Fiche ${subpage?.path ?? inspection.url} - ${audit.domain}`
-    window.print()
-    document.title = previousTitle
+    setPrinting(true)
   }
 
   // Depuis la liste des points à traiter : ouvre le bloc détaillé concerné et l'amène à l'écran
@@ -109,16 +169,33 @@ export function PageInspectionSheet() {
       aria-modal="true"
       className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm transition-opacity animate-in fade-in"
     >
-      <PagePrintSheet audit={audit} inspection={inspection} isPillar={isPillar} />
+      {printing && <PagePrintSheet audit={audit} inspection={inspection} isPillar={isPillar} />}
 
       {/* Backdrop click to close */}
       <div className="absolute inset-0" onClick={closeInspection} />
 
-      <div className="relative flex h-full w-full max-w-2xl flex-col glass-panel text-foreground border-l overflow-hidden animate-in slide-in-from-right duration-300 z-10">
+      <div
+        className="relative flex h-full max-w-full flex-col glass-panel text-foreground border-l overflow-hidden animate-in slide-in-from-right duration-300 z-10"
+        style={{ width }}
+      >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Largeur du tiroir : flèches gauche et droite pour la changer"
+          aria-valuenow={width}
+          aria-valuemin={MIN_DRAWER_WIDTH}
+          tabIndex={0}
+          onPointerDown={startResize}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowLeft') resize(width + 40)
+            if (event.key === 'ArrowRight') resize(width - 40)
+          }}
+          className="absolute inset-y-0 left-0 z-20 w-2 cursor-col-resize bg-transparent transition-colors hover:bg-primary/40 focus-visible:bg-primary/60 focus-visible:outline-none"
+        />
         {/* Header */}
         <div className="flex flex-col border-b border-shade-33 bg-inset p-5">
           <div className="flex items-center justify-between text-muted-foreground text-sm font-medium mb-1">
-            <span>Page Details</span>
+            <span>Fiche de la page</span>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -155,75 +232,56 @@ export function PageInspectionSheet() {
               <ExternalLink className="size-3" />
             </a>
             <span
-              className={`rounded-full border px-2 py-0.5 font-bold ${
+              className={`rounded-full border px-2 py-0.5 font-semibold ${
                 inspection.httpStatus >= 400
-                  ? 'bg-[#ef4444]/20 border-[#ef4444]/40 text-[#ef4444]'
-                  : 'bg-[#12b10f]/20 border-[#12b10f]/40 text-green-ink'
+                  ? 'border-[#ef4444]/40 bg-[#ef4444]/15 text-red-soft'
+                  : 'border-[#12b10f]/40 bg-[#12b10f]/15 text-green-soft'
               }`}
             >
-              HTTP {inspection.httpStatus}
+              {inspection.httpStatus >= 400 ? `En erreur (${inspection.httpStatus})` : 'Page accessible'}
             </span>
-            <span className="rounded-full bg-tint-blue px-2 py-0.5 text-blue-soft">
-              {inspection.indexable ? 'Index' : 'Noindex'}
-            </span>
-            <span className="rounded-full bg-tint-teal px-2 py-0.5 text-teal-soft">
-              {inspection.follow ? 'Follow' : 'Nofollow'}
-            </span>
-            <span className="rounded-full bg-tint-yellow-3 px-2 py-0.5 text-yellow-soft">
-              Temps de réponse ({inspection.responseTime})
+            <span className="rounded-full border border-shade-44 px-2 py-0.5 text-muted-foreground">
+              {inspection.indexable ? 'Visible dans Google' : 'Exclue de Google (noindex)'}
             </span>
           </div>
 
-          {/* Navigation Tabs */}
-          <div className="mt-5 flex items-center justify-between border-b border-shade-33 pt-1">
-            <button
-              type="button"
-              onClick={() => setTab('editorial')}
-              className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'editorial' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span>SEO Éditorial</span>{' '}
-              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
-                {inspection.editorial.score}%
-              </span>
-              {tab === 'editorial' && (
-                <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setTab('tech')}
-              className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'tech' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span>Technique & Meta</span>{' '}
-              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
-                {inspection.tech.score}%
-              </span>
-              {tab === 'tech' && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setTab('geo')}
-              className={`relative pb-3 text-sm font-medium transition-colors ${
-                tab === 'geo' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span>GEO (IA)</span>{' '}
-              <span className="ml-1 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">
-                {inspection.geo.score}%
-              </span>
-              {tab === 'geo' && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
-            </button>
+          {/* Onglets : l'essentiel d'abord, libellés en clair */}
+          <div role="tablist" aria-label="Rubriques de la page" className="mt-5 flex flex-wrap items-end gap-x-5 gap-y-2 border-b border-shade-33 pt-1">
+            {(
+              [
+                { key: 'essentials', label: 'L’essentiel', badge: null },
+                { key: 'editorial', label: 'Contenu', badge: isPillar && !audit.isLocked ? `${inspection.editorial.score}/100` : null },
+                { key: 'tech', label: 'Technique', badge: `${inspection.tech.score}/100` },
+                { key: 'geo', label: 'Moteurs IA', badge: isPillar && !audit.isLocked ? `${inspection.geo.score}/100` : null },
+                {
+                  key: 'serp',
+                  label: 'Positionnement',
+                  badge: subpage?.serp?.status === 'DONE' ? describePagePosition(subpage.serp).badge : null,
+                },
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.key}
+                onClick={() => setTab(item.key)}
+                className={`relative pb-3 text-sm font-medium transition-colors ${
+                  tab === item.key ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {item.label}
+                {item.badge && (
+                  <span className="ml-1.5 rounded-full bg-shade-3a px-2 py-0.5 text-xs font-semibold text-foreground">{item.badge}</span>
+                )}
+                {tab === item.key && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* Tab Content */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="min-w-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-5">
           {/* If not a pillar page and user accesses editorial or geo */}
           {(!isPillar || audit.isLocked) && (tab === 'editorial' || tab === 'geo') ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -246,51 +304,57 @@ export function PageInspectionSheet() {
                 Consulter l’audit Technique & Meta
               </button>
             </div>
+          ) : tab === 'essentials' ? (
+            <InspectionEssentials
+              inspection={inspection}
+              subpage={subpage}
+              aiAvailable={isPillar && !audit.isLocked && inspection.httpStatus < 400 && inspection.indexable}
+              onOpen={(target, targetSection) => {
+                setTab(target)
+                if (targetSection !== undefined) goToSection(targetSection)
+              }}
+            />
+          ) : tab === 'serp' ? (
+            /* Résultats Google de la page, interprétés */
+            subpage ? (
+              <SerpInsights page={subpage} domain={audit.domain} auditDbId={auditDbId} onRefresh={refreshAudit} />
+            ) : null
           ) : tab === 'tech' ? (
             /* TAB 1: TECHNIQUE & META */
             <>
-              {/* Scores Block */}
-              <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
-                <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-                  <div className="md:col-span-5 flex flex-col items-center justify-center">
-                    <SemiCircleGauge
-                      score={inspection.tech.score}
-                      size={150}
-                      label={`Score Technique ${inspection.tech.score}%`}
-                    />
-                    <CoverageNote coverage={inspection.tech.coverage} />
-                  </div>
-                  <div className="md:col-span-7 space-y-2">
-                    {inspection.tech.categories.map((cat) => (
-                      <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
-                        <span className="text-muted-foreground w-36 truncate">{cat.name}</span>
-                        <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all duration-700 ${
-                              cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
-                            }`}
-                            style={{ width: `${cat.score}%` }}
-                          />
-                        </div>
-                        <span className="font-semibold text-foreground tabular-nums w-10 text-right">
-                          {cat.score}%
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <PillarHeader label="Technique" score={inspection.tech.score} coverage={inspection.tech.coverage} />
 
               {/* Priorités (To-Do) */}
               <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
-                <h4 className="font-semibold text-foreground mb-2">Points à traiter (triés par impact)</h4>
+                <h4 className="font-semibold text-foreground mb-2">À corriger</h4>
                 <PriorityList items={inspection.tech.priorities} onGo={goToSection} />
               </div>
 
-              {/* Accordéons détaillés */}
+              {/* Blocs : ceux qui ont un point à revoir d'abord ; les blocs sans problème tiennent sur une ligne */}
               <div className="space-y-2.5">
+                {(() => {
+                  const fine = inspection.tech.accordions
+                    .map((acc, index) => ({ acc, index }))
+                    .filter(({ acc, index }) => !acc.items.some((item) => item.status === 'warning' || item.status === 'error') && !openAccordions[String(index)])
+                  return fine.length > 0 ? (
+                    <p className="flex flex-wrap items-center gap-1.5 rounded-xl border border-shade-33 bg-shade-1e px-4 py-3 text-xs text-muted-foreground">
+                      <span className="font-semibold text-green-soft">Ce qui va bien :</span>
+                      {fine.map(({ acc, index }) => (
+                        <button
+                          key={acc.title}
+                          type="button"
+                          onClick={() => toggleAccordion(String(index))}
+                          className="rounded-md border border-shade-44 px-2 py-0.5 hover:border-primary hover:text-foreground"
+                        >
+                          {acc.title}
+                        </button>
+                      ))}
+                    </p>
+                  ) : null
+                })()}
                 {inspection.tech.accordions.map((acc, index) => {
+                  const hasIssue = acc.items.some((item) => item.status === 'warning' || item.status === 'error')
+                  if (!hasIssue && !openAccordions[String(index)]) return null
                   const isOpen = !!openAccordions[String(index)]
                   return (
                     <div key={acc.title} id={`inspection-acc-${index}`} className="rounded-xl border border-shade-33 bg-shade-1e overflow-hidden">
@@ -326,42 +390,11 @@ export function PageInspectionSheet() {
             <>
               <EditorialSearchPanel key={pageId} pageId={pageId} editorial={inspection.editorial} />
 
-              {/* Scores Block */}
-              <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
-                <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-                  <div className="md:col-span-5 flex flex-col items-center justify-center">
-                    <SemiCircleGauge
-                      score={inspection.editorial.score}
-                      size={150}
-                      label={`Score Éditorial ${inspection.editorial.score}%`}
-                    />
-                    <CoverageNote coverage={inspection.editorial.coverage} />
-                  </div>
-                  <div className="md:col-span-7 space-y-1.5">
-                    {inspection.editorial.categories.map((cat) => (
-                      <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
-                        <span className="text-muted-foreground w-40 truncate">{cat.name}</span>
-                        <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all duration-700 ${
-                              cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
-                            }`}
-                            style={{ width: `${cat.score}%` }}
-                          />
-                        </div>
-                        <span className="font-semibold text-foreground tabular-nums w-10 text-right">
-                          {cat.score}%
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <PillarHeader label="Contenu" score={inspection.editorial.score} coverage={inspection.editorial.coverage} />
 
               {/* Points à traiter : ceux qui font varier le score, puis les autres */}
               <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
-                <h4 className="font-semibold text-foreground mb-2">Points à traiter (triés par impact)</h4>
+                <h4 className="font-semibold text-foreground mb-2">À corriger</h4>
                 <PriorityList items={inspection.editorial.priorities} onGo={goToSection} />
               </div>
 
@@ -444,49 +477,15 @@ export function PageInspectionSheet() {
                 <Sparkles className="size-4" />
               </span>
               <p>
-                <span className="font-bold text-amber-soft">
-                  Analyse GEO (Generative Engine Optimization)
-                </span>{' '}
-                – Évaluation de la citabilité de votre contenu par les moteurs de réponse IA (AI Overviews, Perplexity, SearchGPT).
+                Les moteurs IA (ChatGPT, Perplexity, résumés de Google) peuvent-ils lire cette page et en citer des passages ?
               </p>
             </div>
 
-            {/* Scores Block */}
-            <div className="rounded-2xl border border-shade-3a bg-shade-1e p-5">
-              <h3 className="text-base font-semibold text-foreground mb-3">Scores</h3>
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-                <div className="md:col-span-5 flex flex-col items-center justify-center">
-                  <SemiCircleGauge
-                    score={inspection.geo.score}
-                    size={150}
-                    label={`Score GEO (IA)`}
-                  />
-                  <CoverageNote coverage={inspection.geo.coverage} />
-                </div>
-                <div className="md:col-span-7 space-y-1.5">
-                  {inspection.geo.categories.map((cat) => (
-                    <div key={cat.name} className="flex items-center justify-between text-xs sm:text-sm">
-                      <span className="text-muted-foreground w-40 truncate">{cat.name}</span>
-                      <div className="flex-1 mx-3 h-2 rounded-full bg-shade-33 overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-700 ${
-                            cat.score >= 80 ? 'bg-[#d8c707]' : cat.score >= 50 ? 'bg-[#eab308]' : 'bg-[#ef4444]'
-                          }`}
-                          style={{ width: `${cat.score}%` }}
-                        />
-                      </div>
-                      <span className="font-semibold text-foreground tabular-nums w-10 text-right">
-                        {cat.score}%
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <PillarHeader label="Moteurs IA" score={inspection.geo.score} coverage={inspection.geo.coverage} />
 
             {/* Points de blocage IA (To-Do GEO) */}
             <div className="rounded-2xl border border-line-yellow bg-tint-yellow p-4 text-sm">
-              <h4 className="font-semibold text-foreground mb-2">Points de blocage IA (To-Do GEO)</h4>
+              <h4 className="font-semibold text-foreground mb-2">À corriger</h4>
               <PriorityList items={inspection.geo.priorities} onGo={goToSection} />
             </div>
 

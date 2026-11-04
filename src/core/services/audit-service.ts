@@ -2,6 +2,11 @@ import { createHash } from 'crypto';
 import type { Page } from '@prisma/client';
 import { prisma } from '@/adapters/secondary/database/prisma';
 import { GoogleAutocomplete } from '@/adapters/secondary/search-data/google-autocomplete';
+import { keywordVolumeProvider } from '@/adapters/secondary/search-data/keyword-volume-provider';
+import { buildKeywordRows, keywordSeeds, matchEvidenceVerified, MAX_JUDGED_KEYWORDS, type KeywordResearch } from '../domain/keyword-research';
+import { buildQuerySet, MIN_SCORED_VOLUME } from '../domain/scoring/query-set';
+import { jobRegistry } from './job-registry';
+import type { PageRewrite } from '../domain/page-rewrite';
 import { llmGateway } from '@/adapters/secondary/llm/llm-gateway';
 import { RenderedSchema } from '@/adapters/secondary/crawler/rendered-schema';
 import { SiteCrawler } from '@/adapters/secondary/crawler/site-crawler';
@@ -15,32 +20,46 @@ import { CommonCrawlBacklinkIndex } from '@/adapters/secondary/backlinks/common-
 import { verifyReferringDomains } from '@/adapters/secondary/backlinks/backlink-verifier';
 import type { BacklinkIndexPort } from '../ports/backlink-index';
 import { compareReferringDomains } from '../domain/backlinks';
+import { isArchivePath, resolveCrawlScope } from '../domain/crawl-scope';
+import { prioritizeSearches, remainingSearches, resolveSerpBudget, usageDay, type SerpBudget } from '../domain/serp-budget';
+import { serpFacts } from '../domain/serp-insights';
+import { MAX_PROJECT_ZONES, measurementZones, queryForZone, zoneTag, type GeoZone } from '../domain/zones';
+import { GeoApi } from '@/adapters/secondary/geo/geo-api';
 import { createSerpProvider } from '@/adapters/secondary/serp/create-serp-provider';
 import { SerpBlockedError, type SerpProviderPort } from '../ports/serp-provider';
 import { buildSerpAnalysis } from '../domain/scoring/serp-analysis';
 import { classifyPageRole, hubChildKind, resolvePageRole } from '../domain/scoring/page-role';
+import { resolveGoal } from '../domain/scoring/page-goal';
 import {
   brandVariants,
   filterRelevantSuggestions,
   isSameQuery,
   isUsableSeed,
   normalizeText,
-  stripBrand
+  stripBrand,
+  stripPlaces,
+  suggestionSeeds
 } from '../domain/scoring/autocomplete-relevance';
 import { buildSiteCoherenceIssues, DETERMINISTIC_SITE_CODES } from '../domain/scoring/site-coherence';
 import {
+  serpForQuery,
   betterMeasuredTarget,
   chooseTargetQuery,
+  CANDIDATES_VERSION,
+  chosenSerpQueries,
   containsBrand,
+  mentionedInPage,
   sanitizeCandidates,
   serpQueriesFor
 } from '../domain/scoring/query-candidates';
 import {
   BacklinkReport,
+  CrawlScope,
   EditorialEvaluation,
   GeoEvaluation,
   Issue,
   EditorialSignals,
+  PageGoal,
   PageRole,
   QueryCandidate,
   RawPageData,
@@ -62,14 +81,30 @@ type ContentSnapshot = {
   roleSignals?: RoleSignals;
 };
 
+/** Recherches Google d'une page dans un lancement : requêtes, relevés (dans le même ordre), indices à mesurer */
+/**
+ * Recherches Google d'une page dans un lancement : requêtes × zones. Le relevé de la requête `q` dans la zone `z` est à
+ * l'indice `q * zones.length + z` ; `todo` liste les indices à mesurer.
+ */
+type SerpJob = {
+  page: Page;
+  isPillar: boolean;
+  queries: string[];
+  zones: (GeoZone | undefined)[];
+  zoneCount: number;
+  analyses: SerpAnalysis[];
+  todo: Set<number>;
+};
+
 /** Requête cible d'une page lors de l'audit précédent, reprise au suivant */
-type PreviousQuery = { query: string; manual: boolean; basisHash: string; candidates?: QueryCandidate[] };
+type PreviousQuery = { query: string; manual: boolean; basisHash: string; candidates?: QueryCandidate[]; problem?: string };
 
 export class AuditService {
-  /** Pages explorées au plus (liens puis pages du sitemap non reliées) ; variable CRAWL_MAX_PAGES */
+  /**
+   * Pages explorées au plus quand l'interface n'en donne pas (variable CRAWL_MAX_PAGES) ; sinon le réglage des
+   * paramètres, transmis au lancement
+   */
   private static readonly MAX_CRAWL_PAGES = Math.max(10, Number(process.env.CRAWL_MAX_PAGES) || 150);
-  /** Profondeur suivie : au-delà de 3, la profondeur de clic est réellement mesurée (4 et 5 clics pénalisés) */
-  private static readonly MAX_CRAWL_DEPTH = 6;
   /** Relevés de position conservés par page */
   private static readonly MAX_SERP_HISTORY = 30;
   /** Compromis tokens : Title, méta, Hn et les 1 000 premiers mots seulement */
@@ -93,7 +128,6 @@ export class AuditService {
   }
 
   /** Une seule analyse SERP à la fois : un navigateur visible, un éventuel captcha à résoudre à la main */
-  private static serpJobRunning = false;
   private static readonly SERP_COMPETITORS_READ = 3;
 
   private static sha256(value: string): string {
@@ -149,7 +183,11 @@ export class AuditService {
   /**
    * Lance un nouvel audit avec politique stricte de Zéro-Historique (suppression cascade)
    */
-  public static async launchAudit(rawInput: string) {
+  public static async launchAudit(
+    rawInput: string,
+    /** Périmètre choisi (absent : celui gardé pour le projet, sinon tout le site) et plafond de pages des paramètres */
+    options: { scope?: Partial<CrawlScope> | null; maxPages?: number } = {}
+  ) {
     const { url, domain, name } = this.normalizeDomain(rawInput);
 
     // 1. Trouver ou créer le projet
@@ -180,14 +218,18 @@ export class AuditService {
         const history = this.parseJson<{ serpHistory?: SerpHistoryEntry[] }>(previous.aiEvaluationRaw)?.serpHistory;
         if (history?.length) serpHistoryByUrl.set(key, history);
         if (previous.targetQuery) {
-          const previousMetrics = this.parseJson<{ content?: ContentSnapshot; keptCandidates?: QueryCandidate[] }>(
-            previous.metricsRaw
-          );
+          const previousMetrics = this.parseJson<{
+            content?: ContentSnapshot;
+            keptCandidates?: QueryCandidate[];
+            candidatesVersion?: number;
+            keptProblem?: string;
+          }>(previous.metricsRaw);
           previousQueries.set(key, {
             query: previous.targetQuery,
             manual: previous.targetQuerySource === 'MANUAL',
             basisHash: this.queryBasisHash(previous.title, previous.h1, previousMetrics?.content?.headings ?? []),
-            candidates: previousMetrics?.keptCandidates
+            candidates: previousMetrics?.candidatesVersion === CANDIDATES_VERSION ? previousMetrics.keptCandidates : undefined,
+            problem: previousMetrics?.candidatesVersion === CANDIDATES_VERSION ? previousMetrics.keptProblem : undefined
           });
         }
       }
@@ -206,27 +248,47 @@ export class AuditService {
       });
     }
 
+    // Périmètre : choisi au lancement, sinon celui gardé pour le projet (relance), sinon tout le site
+    const requested = options.scope ?? this.parseJson<Partial<CrawlScope>>(project.crawlScope);
+    // Seuls les sitemaps du domaine audité sont lus : le serveur ne va pas chercher une adresse quelconque
+    const sameSite = (sitemap: string) => {
+      try {
+        return new URL(sitemap).hostname.replace(/^www\./, '') === domain;
+      } catch {
+        return false;
+      }
+    };
+    const scope = resolveCrawlScope(
+      requested ? { ...requested, sitemaps: (requested.sitemaps ?? []).filter(sameSite) } : null,
+      options.maxPages ?? this.MAX_CRAWL_PAGES
+    );
+    await prisma.project.update({ where: { id: project.id }, data: { crawlScope: JSON.stringify(scope) } });
+
     // 2. Créer le nouvel audit unique
     const audit = await prisma.audit.create({
       data: {
         projectId: project.id,
         status: 'CRAWLING_TECH',
         progress: 10,
-        crawlStartedAt: new Date()
+        crawlStartedAt: new Date(),
+        crawlScopeRaw: JSON.stringify(scope)
       }
     });
 
-    // 3. Exécuter le crawl et le calcul des scores (en arrière-plan asynchrone)
-    this.runCrawlPipeline(audit.id, url, serpHistoryByUrl, previousQueries, previousBacklinks).catch((err) => {
-      console.error('Erreur crawl pipeline:', err);
-      prisma.audit.update({
-        where: { id: audit.id },
-        data: {
-          status: 'FAILED',
-          errorMessage: err?.message || 'Erreur inconnue lors du crawl'
-        }
-      }).catch(console.error);
-    });
+    // 3. Exécuter le crawl et le calcul des scores (en arrière-plan asynchrone), suivi dans le registre des travaux
+    jobRegistry.startAudit(audit.id);
+    this.runCrawlPipeline(audit.id, url, serpHistoryByUrl, previousQueries, previousBacklinks, scope)
+      .catch((err) => {
+        console.error('Erreur crawl pipeline:', err);
+        prisma.audit.update({
+          where: { id: audit.id },
+          data: {
+            status: 'FAILED',
+            errorMessage: err?.message || 'Erreur inconnue lors du crawl'
+          }
+        }).catch(console.error);
+      })
+      .finally(() => jobRegistry.endAudit(audit.id));
 
     return {
       projectId: project.id,
@@ -290,7 +352,8 @@ export class AuditService {
     originUrl: string,
     serpHistoryByUrl: Map<string, SerpHistoryEntry[]> = new Map(),
     previousQueries: Map<string, PreviousQuery> = new Map(),
-    previousBacklinks: BacklinkReport | null = null
+    previousBacklinks: BacklinkReport | null = null,
+    scope: CrawlScope = resolveCrawlScope(null, this.MAX_CRAWL_PAGES)
   ) {
     // Backlinks en parallèle du crawl : graphe Common Crawl (moins d'une seconde) puis vérification en direct
     const backlinks = this.collectBacklinks(new URL(originUrl).hostname, previousBacklinks);
@@ -309,13 +372,25 @@ export class AuditService {
       domainMeta.robots?.sitemaps ?? []
     );
 
-    // Étape B : Crawl réel par suivi des liens internes depuis la racine
+    // Sitemaps choisis : leurs pages forment le périmètre (l'accueil est toujours exploré)
+    const allowedUrls =
+      scope.mode === 'sitemaps'
+        ? await SiteCrawler.loadSitemapUrls(new URL(originUrl).origin, scope.sitemaps ?? [], true)
+        : null;
+    if (scope.mode === 'sitemaps' && !allowedUrls) {
+      console.warn(`[AuditService] Sitemaps choisis illisibles pour ${originUrl} : exploration de tout le site`);
+    }
+
+    // Étape B : Crawl réel par suivi des liens internes depuis la racine, dans le périmètre choisi
     const crawledPages: RawPageData[] = await SiteCrawler.crawlSite(originUrl, {
-      maxPages: this.MAX_CRAWL_PAGES,
-      maxDepth: this.MAX_CRAWL_DEPTH,
+      maxPages: scope.maxPages,
+      maxDepth: scope.maxDepth,
       robots: domainMeta.robots,
       sitemapUrls,
+      allowedUrls,
+      excludePath: scope.mode === 'main' ? isArchivePath : undefined,
       onProgress: async (crawled, maxPages) => {
+        jobRegistry.beatAudit(auditId);
         await prisma.audit.update({
           where: { id: auditId },
           data: { progress: 30 + Math.round(Math.min(1, crawled / maxPages) * 40) }
@@ -390,7 +465,7 @@ export class AuditService {
           ...(keptQuery ? { targetQuery: keptQuery.query, targetQuerySource: keptQuery.manual ? 'MANUAL' : 'AUTO' } : {}),
           metricsRaw: JSON.stringify({
             ...(keptQuery && !keptQuery.manual ? { keptQuery: keptQuery.query } : {}),
-            ...(keptCandidates ? { keptCandidates } : {}),
+            ...(keptCandidates ? { keptCandidates, candidatesVersion: CANDIDATES_VERSION, keptProblem: previousQuery?.problem } : {}),
             content: snapshot,
             images: page.images
               .slice(0, this.MAX_LISTED_IMAGES)
@@ -557,19 +632,23 @@ export class AuditService {
       data: {
         status: 'ANALYZING_AI',
         progress: 0,
-        pillarPagesCount: pillarPageIds.length
+        pillarPagesCount: pillarPageIds.length,
+        errorMessage: null
       }
     });
 
-    this.runEditorialAnalysis(auditId).catch((err) => {
-      console.error('Erreur analyse éditoriale:', err);
-      prisma.audit
-        .update({
-          where: { id: auditId },
-          data: { status: 'FAILED', errorMessage: err?.message || 'Erreur inconnue lors de l’analyse IA' }
-        })
-        .catch(console.error);
-    });
+    jobRegistry.startAudit(auditId);
+    this.runEditorialAnalysis(auditId)
+      .catch((err) => {
+        console.error('Erreur analyse éditoriale:', err);
+        prisma.audit
+          .update({
+            where: { id: auditId },
+            data: { status: 'FAILED', errorMessage: err?.message || 'Erreur inconnue lors de l’analyse IA' }
+          })
+          .catch(console.error);
+      })
+      .finally(() => jobRegistry.endAudit(auditId));
 
     return audit;
   }
@@ -594,6 +673,7 @@ export class AuditService {
             console.error(`[AuditService] Analyse éditoriale impossible : ${page.url}`, err);
           }
           done++;
+          jobRegistry.beatAudit(auditId);
           await prisma.audit.update({
             where: { id: auditId },
             data: { progress: Math.round((done / pillars.length) * 100) }
@@ -700,8 +780,11 @@ export class AuditService {
     const metrics = this.parseJson<{
       content?: ContentSnapshot;
       roleOverride?: PageRole;
+      goalOverride?: PageGoal;
       keptQuery?: string;
       keptCandidates?: QueryCandidate[];
+      candidatesVersion?: number;
+      keptProblem?: string;
     }>(page.metricsRaw);
     const snapshot: ContentSnapshot = metrics?.content ?? {
       headings: [],
@@ -714,7 +797,7 @@ export class AuditService {
 
     const manualQuery =
       page.targetQuerySource === 'MANUAL' && page.targetQuery ? page.targetQuery : undefined;
-    const raw = this.toRawPage(page, snapshot, metrics?.roleOverride);
+    const raw = this.toRawPage(page, snapshot, metrics?.roleOverride, metrics?.goalOverride);
     // Rôle de départ, transmis à l'IA qui peut le corriger ; une correction manuelle prime sur tout
     const role = resolvePageRole({
       manual: metrics?.roleOverride,
@@ -727,34 +810,57 @@ export class AuditService {
         ...snapshot.roleSignals
       })
     }).role;
+    // Objectif de la page : choix de l'utilisateur, sinon celui du rôle ; il décide ce que l'IA juge et propose
+    const { goal } = resolveGoal({ manual: metrics?.goalOverride, role });
 
     // Requêtes génériques (sans la marque) pour toutes les pages, sauf contact et pages utilitaires : on y cherche
     // le site par son nom, l'IA déduit alors une requête de marque comme avant
     const brands = brandVariants(domain);
     const genericQueries = role !== 'contact' && role !== 'utility';
-    let candidates: QueryCandidate[] = metrics?.keptCandidates ?? [];
+    // Candidates gardées seulement pour un rôle qui en reçoit : une page passée en contact ne garde pas
+    // « agence web chartres » d'un ancien rôle d'offre
+    // Mots-clés de départ d'une consigne précédente : non repris (l'IA en propose de nouveaux, et la requête déduite
+    // avec eux est redéduite)
+    let candidates: QueryCandidate[] =
+      genericQueries && metrics?.candidatesVersion === CANDIDATES_VERSION ? metrics.keptCandidates ?? [] : [];
+    let problem = genericQueries && metrics?.candidatesVersion === CANDIDATES_VERSION ? metrics.keptProblem : undefined;
     // Requête déduite conservée (analyse précédente sur le même contenu) : l'IA ne la redéduit pas. Une requête
-    // déduite avant les candidates (souvent la marque) n'est pas reprise : elle est remplacée par une candidate
+    // déduite avant les candidates (souvent la marque) n'est pas reprise : elle est remplacée par une candidate.
+    // Contact ou utilitaire : seule une requête de marque est reprise (une générique venait d'un autre rôle)
     const fixedQuery =
       manualQuery || !metrics?.keptQuery
         ? undefined
-        : !genericQueries || (candidates.length > 0 && !containsBrand(metrics.keptQuery, brands))
-          ? metrics.keptQuery
-          : undefined;
+        : genericQueries
+          ? candidates.length > 0 && !containsBrand(metrics.keptQuery, brands)
+            ? metrics.keptQuery
+            : undefined
+          : containsBrand(metrics.keptQuery, brands)
+            ? metrics.keptQuery
+            : undefined;
     // Version du prompt et modèle dans la clé : un changement de barème ou de modèle relance l'analyse
     const hashFor = (kept: string | undefined) =>
-      this.sha256(`${page.contentHash ?? ''}|${manualQuery ?? ''}|${kept ?? ''}|${llmGateway.cacheKey()}`);
+      this.sha256(
+        `${page.contentHash ?? ''}|${manualQuery ?? ''}|${kept ?? ''}|${llmGateway.cacheKey()}${
+          metrics?.roleOverride ? `|${metrics.roleOverride}` : ''
+        }|goal:${goal}`
+      );
 
     if (
       !options.force &&
       page.analyzedHash === hashFor(fixedQuery) &&
       stored?.editorial?.search?.analyzedBy.engine === 'LLM'
     ) {
+      // Rien n'a changé pour l'IA : pas de nouvel appel, mais le score et les anomalies sont recalculés depuis
+      // l'analyse enregistrée (l'ajout d'une page stratégique efface les anomalies de contenu de toutes les pages)
+      await this.rescoreEditorial(page);
       return;
     }
 
     let evaluation: EditorialEvaluation | undefined;
     let error: string | undefined;
+    let autocomplete: Awaited<ReturnType<typeof AuditService.fetchSuggestionsFor>> | undefined;
+    // Mots-clés et volumes, cherchés avant l'IA : les plus recherchés forment les requêtes notées qu'elle juge
+    let keywords = (stored as { keywords?: KeywordResearch } | null)?.keywords;
     const blocked = page.httpStatus >= 400 || !page.isIndexable;
 
     if (!blocked) {
@@ -763,15 +869,34 @@ export class AuditService {
       } else {
         try {
           if (genericQueries && candidates.length === 0) {
-            candidates = await this.proposeCandidates(page, domain, role, snapshot, brands, pillars);
+            ({ candidates, problem } = await this.proposeCandidates(page, domain, role, snapshot, brands, pillars));
           }
           // Requête cible : la première candidate que Google suggère, sinon la première proposée par l'IA
           const chosenQuery = manualQuery || fixedQuery ? undefined : chooseTargetQuery(candidates)?.query;
-          const suggestions = await this.fetchSuggestionsFor(page, domain, manualQuery ?? fixedQuery ?? chosenQuery, role);
+          autocomplete = await this.fetchSuggestionsFor(page, domain, manualQuery ?? fixedQuery ?? chosenQuery, role);
+          const suggestions = autocomplete.suggestions;
+          // Requête cible sans lieu, comme après l'analyse : l'IA juge exactement les requêtes que le moteur notera
+          const knownTarget =
+            manualQuery ??
+            ((fixedQuery ?? chosenQuery) ? stripPlaces(fixedQuery ?? chosenQuery ?? '', await this.placeNamesFor(page)) || (fixedQuery ?? chosenQuery) : undefined);
+          const fresh = await this.buildKeywordResearch(page, domain, knownTarget, candidates, { problem, role }).catch((err) => {
+            console.warn(`[AuditService] Mots-clés indisponibles pour ${page.url} : ${err?.message ?? err}`);
+            return undefined;
+          });
+          keywords = fresh ? this.keepPreviousKeywords(keywords, fresh) : keywords;
+          raw.keywordResearch = keywords;
+          const queries = buildQuerySet({
+            target: knownTarget ? { query: knownTarget, confirmed: true, isBrand: !genericQueries } : undefined,
+            research: keywords,
+            candidates,
+            override: raw.querySetOverride,
+            brandOnly: !genericQueries
+          }).map((entry) => entry.query);
           evaluation = await llmGateway.evaluateEditorial({
             url: page.url,
             domain,
             role,
+            goal,
             title: page.title ?? undefined,
             metaDescription: page.metaDescription ?? undefined,
             h1: page.h1 ?? undefined,
@@ -787,6 +912,7 @@ export class AuditService {
             manualQuery,
             fixedQuery,
             chosenQuery,
+            queries,
             suggestions,
             siblingPages: pillars
               .filter((p) => p.id !== page.id)
@@ -811,11 +937,29 @@ export class AuditService {
         const exact = already || candidate ? [] : await GoogleAutocomplete.fetchExact(query);
         evaluation.search.targetQuery.suggestedByGoogle = already || exact.some((suggestion) => isSameQuery(query, suggestion));
       }
+      // Requête déduite sans lieu (la zone est ajoutée à la mesure) ; une requête saisie reste telle quelle
+      if (evaluation.search.targetQuery.source !== 'MANUAL') {
+        const places = [...(await this.placeNamesFor(page)), evaluation.search.local?.city ?? ''].filter(Boolean);
+        const bare = stripPlaces(evaluation.search.targetQuery.query, places);
+        if (bare) evaluation.search.targetQuery.query = bare;
+      }
       evaluation.search.targetQuery.isBrand = !genericQueries || containsBrand(query, brands);
+      // Pourquoi il y a, ou non, des suggestions : affiché tel quel dans l'onglet Contenu
+      if (autocomplete) {
+        evaluation.search.autocomplete = { ...evaluation.search.autocomplete, status: autocomplete.status, seed: autocomplete.seed };
+      }
       if (candidates.length > 0) evaluation.search.candidates = candidates;
+      if (problem) evaluation.search.problem = problem;
     }
 
-    const result = EditorialScoringEngine.calculate(raw, evaluation, stored?.serp);
+    // Relevé de la requête retenue (une requête changée n'est pas jugée sur les résultats de l'ancienne)
+    const storedSerp = this.parseJson<{ serpQueries?: SerpAnalysis[] }>(page.aiEvaluationRaw)?.serpQueries;
+    const result = EditorialScoringEngine.calculate(
+      raw,
+      evaluation,
+      serpForQuery(evaluation?.search?.targetQuery.query ?? page.targetQuery ?? undefined, stored?.serp, storedSerp),
+      storedSerp ?? []
+    );
     const search = result.evaluation?.search;
     const engine = evaluation ? 'LLM' : 'HEURISTIC';
 
@@ -887,7 +1031,9 @@ export class AuditService {
               metricsRaw: JSON.stringify({
                 ...this.parseJson<Record<string, unknown>>(page.metricsRaw),
                 ...(search?.targetQuery.source === 'AUTO' ? { keptQuery: search.targetQuery.query } : {}),
-                ...(candidates.length > 0 ? { keptCandidates: candidates } : {})
+                ...(candidates.length > 0
+                  ? { keptCandidates: candidates, candidatesVersion: CANDIDATES_VERSION, ...(problem ? { keptProblem: problem } : {}) }
+                  : {})
               })
             }
           : {}),
@@ -898,6 +1044,7 @@ export class AuditService {
         aiEvaluationRaw: JSON.stringify({
           ...stored,
           editorial: result.evaluation,
+          ...(keywords ? { keywords } : {}),
           ...(geo?.evaluation ? { geo: geo.evaluation } : {}),
           editorialStatus: { engine, error }
         })
@@ -944,8 +1091,10 @@ export class AuditService {
     domain: string,
     targetQuery: string | undefined,
     role: string
-  ): Promise<string[]> {
-    if (!targetQuery && (role === 'contact' || role === 'brand' || role === 'utility')) return [];
+  ): Promise<{ suggestions: string[]; status: 'FOUND' | 'NONE' | 'UNAVAILABLE' | 'NOT_REQUESTED'; seed?: string }> {
+    if (!targetQuery && (role === 'contact' || role === 'brand' || role === 'utility')) {
+      return { suggestions: [], status: 'NOT_REQUESTED' };
+    }
 
     const brands = brandVariants(domain);
     const clean = (value: string) =>
@@ -959,31 +1108,40 @@ export class AuditService {
         .map(clean)
         .filter(Boolean);
 
-    const candidates = Array.from(
+    // Requête visée et ses variantes plus courtes (sans les lieux, puis 3 et 2 mots principaux), puis le Title et le H1
+    const places = await this.zoneNamesFor(page);
+    const seeds = Array.from(
       new Set(
         [
-          targetQuery?.trim().toLowerCase(),
-          page.targetQuerySource === 'AUTO' && page.targetQuery ? clean(page.targetQuery) : undefined,
+          ...(targetQuery ? suggestionSeeds(targetQuery.trim().toLowerCase(), places) : []),
+          ...(targetQuery ? [] : [page.targetQuerySource === 'AUTO' && page.targetQuery ? clean(page.targetQuery) : '']),
           ...segments(page.title),
           ...segments(page.h1)
         ]
-          .filter((seed): seed is string => Boolean(seed))
-          // La requête cible (saisie, conservée ou choisie) est toujours tentée ; les autres doivent être exploitables
-          .filter((seed, index) => (index === 0 && Boolean(targetQuery)) || isUsableSeed(seed))
+          .filter((seed) => Boolean(seed) && isUsableSeed(seed))
           .map((seed) => seed.split(' ').slice(0, 6).join(' '))
       )
-    ).slice(0, 3);
+    ).slice(0, 5);
 
-    for (const seed of candidates) {
-      const relevant = filterRelevantSuggestions(seed, await GoogleAutocomplete.fetchSuggestions(seed));
-      if (relevant.length >= 3) return relevant;
+    // La première graine qui donne au moins 3 suggestions (assez pour en tirer une intention) ; sinon la meilleure,
+    // dès 1 suggestion. Rien de pertinent : Google a répondu sans suggestion (NONE) ou n'a pas répondu (UNAVAILABLE)
+    let reachable = false;
+    let best: { suggestions: string[]; seed: string } | undefined;
+    for (const seed of seeds) {
+      const result = await GoogleAutocomplete.fetchSuggestionsChecked(seed);
+      reachable ||= result.reachable;
+      const relevant = filterRelevantSuggestions(seed, result.suggestions);
+      if (relevant.length >= 3) return { suggestions: relevant, status: 'FOUND', seed };
+      if (relevant.length > (best?.suggestions.length ?? 0)) best = { suggestions: relevant, seed };
     }
-    return [];
+    if (best) return { suggestions: best.suggestions, status: 'FOUND', seed: best.seed };
+    return { suggestions: [], status: reachable || seeds.length === 0 ? 'NONE' : 'UNAVAILABLE', seed: seeds[0] };
   }
 
   /**
-   * Requêtes candidates d'une page : proposées par l'IA, nettoyées par le code (marque, doublons, rubriques), puis
-   * vérifiées une à une dans Google Autocomplete. Échec de l'IA : liste vide, l'analyse déduit alors la requête.
+   * Mots-clés de départ d'une page et sa problématique : l'IA lit la page et choisit 8 à 12 mots-clés tels qu'on les
+   * tape dans Google ; le code retire marque, lieux, rubriques, doublons et tout sujet absent de la page, puis vérifie
+   * chacun dans Google Autocomplete. Ils partent ensuite dans Keyword Planner. Échec de l'IA : liste vide.
    */
   private static async proposeCandidates(
     page: Page,
@@ -992,9 +1150,9 @@ export class AuditService {
     snapshot: ContentSnapshot,
     brands: string[],
     pillars: Page[]
-  ): Promise<QueryCandidate[]> {
+  ): Promise<{ candidates: QueryCandidate[]; problem?: string }> {
     try {
-      const proposals = await llmGateway.proposeQueries({
+      const { problem, queries: proposals } = await llmGateway.proposeQueries({
         url: page.url,
         domain,
         role,
@@ -1005,18 +1163,106 @@ export class AuditService {
         excerpt: snapshot.excerpt,
         siblingPages: pillars
           .filter((p) => p.id !== page.id)
-          .map((p) => ({ url: p.url, title: p.title ?? undefined, h1: p.h1 ?? undefined }))
+          .map((p) => ({ url: p.url, title: p.title ?? undefined, h1: p.h1 ?? undefined })),
+        zones: await this.zoneNamesFor(page)
       });
-      const candidates = sanitizeCandidates(proposals, brands);
+      // Mot-clé dont aucun mot porteur de sens ne figure dans la page : sujet inventé, écarté
+      const pageText = [page.title, page.h1, ...snapshot.headings.map((h) => h.text), snapshot.excerpt].filter(Boolean).join(' ');
+      const candidates = sanitizeCandidates(proposals, brands, undefined, await this.placeNamesFor(page)).filter((candidate) =>
+        mentionedInPage(candidate.query, pageText)
+      );
       for (const candidate of candidates) {
         const suggestions = await GoogleAutocomplete.fetchExact(candidate.query);
         candidate.suggestedByGoogle = suggestions.some((suggestion) => isSameQuery(candidate.query, suggestion));
       }
-      return candidates;
+      return { candidates, ...(problem ? { problem } : {}) };
     } catch (err: any) {
-      console.warn(`[AuditService] Requêtes candidates indisponibles pour ${page.url} : ${err?.message ?? err}`);
-      return [];
+      console.warn(`[AuditService] Mots-clés de départ indisponibles pour ${page.url} : ${err?.message ?? err}`);
+      return { candidates: [] };
     }
+  }
+
+  /**
+   * Zones ciblées du projet (3 au plus), validées par l'API Géo. Les recherches proposées par l'IA sont oubliées pour
+   * les pages à requête déduite du dernier audit : la prochaine analyse IA en propose avec ces zones.
+   */
+  public static async setProjectZones(projectRef: string, refs: { kind: GeoZone['kind']; code: string }[]): Promise<GeoZone[]> {
+    const project = await prisma.project.findFirst({ where: { OR: [{ id: projectRef }, { domain: projectRef }] } });
+    if (!project) throw new Error('Projet introuvable');
+    const zones: GeoZone[] = [];
+    for (const ref of refs.slice(0, MAX_PROJECT_ZONES)) {
+      const zone = await GeoApi.resolve(ref.kind, ref.code);
+      if (!zone) throw new Error(`Zone introuvable : ${ref.kind} ${ref.code}`);
+      if (!zones.some((existing) => existing.id === zone.id)) zones.push(zone);
+    }
+    await prisma.project.update({ where: { id: project.id }, data: { zonesRaw: JSON.stringify(zones) } });
+    await this.forgetProposedQueries(project.id);
+    return zones;
+  }
+
+  /** Zone propre à une page (null : retour aux zones du projet), gardée d'un audit à l'autre par la clé d'URL */
+  public static async setPageZone(
+    projectRef: string,
+    url: string,
+    ref: { kind: GeoZone['kind']; code: string } | null
+  ): Promise<GeoZone | null> {
+    const project = await prisma.project.findFirst({ where: { OR: [{ id: projectRef }, { domain: projectRef }] } });
+    if (!project) throw new Error('Projet introuvable');
+    const zone = ref ? await GeoApi.resolve(ref.kind, ref.code) : null;
+    if (ref && !zone) throw new Error(`Zone introuvable : ${ref.kind} ${ref.code}`);
+    const pageZones = this.parseJson<Record<string, GeoZone>>(project.pageZonesRaw) ?? {};
+    const key = SiteCrawler.urlKey(url);
+    if (zone) pageZones[key] = zone;
+    else delete pageZones[key];
+    await prisma.project.update({ where: { id: project.id }, data: { pageZonesRaw: JSON.stringify(pageZones) } });
+    await this.forgetProposedQueries(project.id, key);
+    return zone;
+  }
+
+  /** Recherches proposées et requête déduite oubliées (requêtes saisies gardées) : reproposées à la prochaine analyse */
+  private static async forgetProposedQueries(projectId: string, onlyUrlKey?: string) {
+    const audit = await prisma.audit.findFirst({ where: { projectId }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+    if (!audit) return;
+    const pages = await prisma.page.findMany({ where: { auditId: audit.id, isPillar: true } });
+    for (const page of pages) {
+      if (onlyUrlKey && SiteCrawler.urlKey(page.url) !== onlyUrlKey) continue;
+      const metrics = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
+      if (!metrics.keptCandidates && !metrics.keptQuery) continue;
+      delete metrics.keptCandidates;
+      if (page.targetQuerySource !== 'MANUAL') delete metrics.keptQuery;
+      await prisma.page.update({ where: { id: page.id }, data: { metricsRaw: JSON.stringify(metrics) } });
+    }
+  }
+
+  /**
+   * Lieux à retirer des recherches proposées : toutes les zones du projet et des pages (avec leur département et
+   * leur région), puis la ville de la page repérée par l'IA. La zone est ajoutée au moment de la mesure.
+   */
+  private static async placeNamesFor(page: Page): Promise<string[]> {
+    const audit = await prisma.audit.findUnique({
+      where: { id: page.auditId },
+      select: { project: { select: { zonesRaw: true, pageZonesRaw: true } } }
+    });
+    const zones = [
+      ...(this.parseJson<GeoZone[]>(audit?.project.zonesRaw) ?? []),
+      ...Object.values(this.parseJson<Record<string, GeoZone>>(audit?.project.pageZonesRaw) ?? {})
+    ];
+    const city = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial?.search?.local?.city;
+    const names = zones.flatMap((zone) => [zone.name, zone.city.name, zone.departement?.name, zone.region?.name]);
+    return Array.from(new Set([...names, city].filter((name): name is string => Boolean(name))));
+  }
+
+  /** Noms des zones de la page (sa zone propre, sinon celles du projet) */
+  private static async zoneNamesFor(page: Page): Promise<string[]> {
+    const audit = await prisma.audit.findUnique({
+      where: { id: page.auditId },
+      select: { project: { select: { zonesRaw: true, pageZonesRaw: true } } }
+    });
+    const zones = measurementZones(
+      this.parseJson<GeoZone[]>(audit?.project.zonesRaw) ?? [],
+      this.parseJson<Record<string, GeoZone>>(audit?.project.pageZonesRaw)?.[SiteCrawler.urlKey(page.url)]
+    );
+    return zones.filter((zone): zone is GeoZone => Boolean(zone)).map((zone) => zone.name);
   }
 
   /**
@@ -1147,6 +1393,7 @@ export class AuditService {
    * de la requête cible (il sert au score), `queries` tous les relevés du lancement (requête cible et candidates).
    */
   private static async saveSerp(page: Page, serp: SerpAnalysis | null, queries?: SerpAnalysis[]) {
+    jobRegistry.beatSerp();
     const current = await prisma.page.findUnique({ where: { id: page.id }, select: { aiEvaluationRaw: true } });
     const stored = this.parseJson<Record<string, unknown>>(current?.aiEvaluationRaw) ?? {};
     if (serp) stored.serp = serp;
@@ -1157,8 +1404,14 @@ export class AuditService {
     const history = Array.isArray(stored.serpHistory) ? (stored.serpHistory as SerpHistoryEntry[]) : [];
     for (const done of queries ?? (serp ? [serp] : [])) {
       if (done.status !== 'DONE' || !done.fetchedAt) continue;
-      if (history.some((entry) => entry.date === done.fetchedAt && entry.query === done.query)) continue;
+      if (
+        history.some(
+          (entry) => entry.date === done.fetchedAt && entry.query === done.query && entry.zone === done.zone?.id
+        )
+      )
+        continue;
       history.push({
+        ...(done.zone ? { zone: done.zone.id } : {}),
         date: done.fetchedAt,
         query: done.query,
         provider: done.provider ?? 'browser',
@@ -1176,22 +1429,45 @@ export class AuditService {
   /**
    * Lance en arrière-plan l'analyse SERP de pages : recherche Google de la requête cible et des requêtes candidates
    * (3 au plus par page), position du domaine, lecture des 3 premiers concurrents de la requête cible, écarts de
-   * sections, intention des résultats. Retourne `started: false` si une analyse est déjà en cours.
+   * sections, intention des résultats. Les recherches suivent un budget (par lancement et par jour, tous projets) :
+   * ce qui le dépasse, ou ce qu'un captcha interrompt, reste « en attente » et se reprend avec `resume`.
+   * Retourne `started: false` si une analyse est déjà en cours.
    */
   public static async startSerpAnalysis(
     auditId: string,
     pageIds: string[],
-    options: { queries?: Record<string, string>; provider?: SerpProviderPort } = {}
-  ): Promise<{ started: boolean; reason?: string; pages: number }> {
+    options: {
+      queries?: Record<string, string>;
+      /** Requêtes à mesurer choisies par page (nettoyées par `chosenSerpQueries`), à la place des requêtes proposées */
+      queryLists?: Record<string, string[]>;
+      provider?: SerpProviderPort;
+      budget?: Partial<SerpBudget>;
+      /** Reprendre seulement les recherches en attente de ces pages, sans refaire les autres */
+      resume?: boolean;
+    } = {}
+  ): Promise<{ started: boolean; reason?: string; pages: number; queued: number; remainingToday: number }> {
     const provider = options.provider ?? createSerpProvider();
     const queries = options.queries ?? {};
+    const budget = resolveSerpBudget(options.budget);
     const audit = await prisma.audit.findUnique({ where: { id: auditId }, include: { project: true } });
     if (!audit) throw new Error('Audit introuvable');
     if (!['AWAITING_AI_SELECTION', 'ANALYZING_AI', 'COMPLETED'].includes(audit.status)) {
       throw new Error('Le crawl n’est pas terminé');
     }
-    if (this.serpJobRunning) {
-      return { started: false, reason: 'Une analyse SERP est déjà en cours.', pages: 0 };
+    if (jobRegistry.serpAlive()) {
+      return { started: false, reason: 'Une analyse SERP est déjà en cours.', pages: 0, queued: 0, remainingToday: 0 };
+    }
+    // Mesure précédente interrompue (serveur arrêté, travail bloqué) : ses recherches « en cours » passent en attente
+    await this.recoverInterrupted(auditId);
+    const usedToday = await this.serpUsageToday();
+    if (remainingSearches(budget, 0, usedToday) < 1) {
+      return {
+        started: false,
+        reason: `Budget du jour atteint (${budget.perDay} recherches Google) : reprenez demain ou augmentez-le dans les Paramètres.`,
+        pages: 0,
+        queued: 0,
+        remainingToday: 0
+      };
     }
 
     // Toute page explorée, indexable et accessible peut être mesurée : piliers ou non
@@ -1201,40 +1477,169 @@ export class AuditService {
     if (pages.length === 0) throw new Error('Aucune page analysable pour la SERP');
 
     // Requêtes saisies par l'utilisateur : manuelles, conservées pour la page (et ses analyses futures)
-    pages = await Promise.all(
-      pages.map((page) =>
-        queries[page.id]
-          ? prisma.page.update({
-              where: { id: page.id },
-              data: { targetQuery: queries[page.id], targetQuerySource: 'MANUAL' }
-            })
-          : page
-      )
-    );
-
-    this.serpJobRunning = true;
-    for (const page of pages) {
-      const list = this.serpQueriesOf(page);
-      await this.saveSerp(
-        page,
-        this.emptySerp(list[0], 'RUNNING'),
-        list.map((query) => this.emptySerp(query, 'RUNNING'))
+    if (!options.resume) {
+      pages = await Promise.all(
+        pages.map((page) =>
+          queries[page.id]
+            ? prisma.page.update({
+                where: { id: page.id },
+                data: { targetQuery: queries[page.id], targetQuerySource: 'MANUAL' }
+              })
+            : page
+        )
       );
     }
 
-    this.runSerpJob(pages, audit.project.domain, provider)
-      .catch((err) => console.error('[AuditService] Analyse SERP interrompue :', err))
-      .finally(() => {
-        this.serpJobRunning = false;
-      });
+    // Zones : celles de la page si elle en a une, sinon celles du projet ; aucune : mesure sans lieu simulé
+    const projectZones = this.parseJson<GeoZone[]>(audit.project.zonesRaw) ?? [];
+    const pageZones = this.parseJson<Record<string, GeoZone>>(audit.project.pageZonesRaw) ?? {};
 
-    return { started: true, pages: pages.length };
+    // Recherches à faire par page : toutes, ou en reprise celles restées en attente (les relevés faits sont gardés)
+    const jobs: SerpJob[] = [];
+    for (const page of pages) {
+      const zones = measurementZones(projectZones, pageZones[SiteCrawler.urlKey(page.url)]);
+      const stored = this.parseJson<{ serpQueries?: SerpAnalysis[] }>(page.aiEvaluationRaw)?.serpQueries ?? [];
+      // Requêtes : en reprise celles du lancement interrompu ; sinon celles choisies par l'utilisateur (gardées telles
+      // quelles), à défaut la requête cible et les candidates
+      const resumed = options.resume ? Array.from(new Set(stored.map((serp) => serp.query).filter(Boolean))) : [];
+      const chosen = chosenSerpQueries(options.queryLists?.[page.id]);
+      const list = resumed.length
+        ? resumed
+        : chosen.length
+          ? chosen
+          : this.serpQueriesOf(page, await this.placeNamesFor(page));
+      if (!options.resume) await this.markTargetSkipped(page, list);
+      const analyses = list.flatMap((query) =>
+        zones.map((zone) =>
+          options.resume
+            ? stored.find((serp) => serp.query === query && serp.zone?.id === zone?.id) ??
+              this.emptySerp(query, 'PENDING', 'En attente', zone)
+            : this.emptySerp(query, 'RUNNING', undefined, zone)
+        )
+      );
+      const todo = analyses
+        .map((_, index) => index)
+        .filter((index) => !options.resume || analyses[index].status === 'PENDING');
+      if (todo.length === 0) continue;
+      for (const index of todo) analyses[index] = { ...analyses[index], status: 'RUNNING', message: undefined };
+      await this.saveSerp(page, analyses[0], analyses);
+      jobs.push({ page, isPillar: page.isPillar, queries: list, zones, zoneCount: zones.length, analyses, todo: new Set(todo) });
+    }
+    if (jobs.length === 0) {
+      return { started: false, reason: 'Aucune recherche en attente pour ces pages.', pages: 0, queued: 0, remainingToday: 0 };
+    }
+
+    jobRegistry.startSerp();
+    this.runSerpJob(jobs, audit.project.domain, provider, budget, usedToday)
+      .catch((err) => console.error('[AuditService] Analyse SERP interrompue :', err))
+      .finally(() => jobRegistry.endSerp());
+
+    const queued = jobs.reduce((sum, job) => sum + job.todo.size, 0);
+    return { started: true, pages: jobs.length, queued, remainingToday: remainingSearches(budget, 0, usedToday) };
   }
 
-  private static emptySerp(query: string, status: SerpAnalysis['status'], message?: string): SerpAnalysis {
+  /**
+   * Remet en état les travaux interrompus (serveur arrêté ou redémarré, travail bloqué sans avancée) :
+   * - exploration en cours : audit en échec, à relancer ;
+   * - analyse IA en cours : retour au choix des pages, à relancer (les pages déjà analysées ne sont pas refaites) ;
+   * - recherches Google « en cours » : « en attente », reprises par le bouton Reprendre.
+   * Appelée à la lecture d'un audit et des projets, et avant une nouvelle mesure. Sans `auditId` : tous les audits.
+   */
+  public static async recoverInterrupted(auditId?: string) {
+    const stuck = await prisma.audit.findMany({
+      where: { ...(auditId ? { id: auditId } : {}), status: { in: ['QUEUED', 'CRAWLING_TECH', 'ANALYZING_AI'] } },
+      select: { id: true, status: true }
+    });
+    for (const audit of stuck) {
+      if (jobRegistry.auditAlive(audit.id)) continue;
+      jobRegistry.endAudit(audit.id);
+      await prisma.audit.update({
+        where: { id: audit.id },
+        data:
+          audit.status === 'ANALYZING_AI'
+            ? {
+                status: 'AWAITING_AI_SELECTION',
+                errorMessage: 'Analyse IA interrompue : relancez-la, les pages déjà analysées ne seront pas refaites.'
+              }
+            : { status: 'FAILED', errorMessage: 'Exploration interrompue (serveur arrêté ou bloqué) : relancez l’audit.' }
+      });
+    }
+
+    if (jobRegistry.serpAlive()) return;
+    jobRegistry.endSerp();
+    const pages = await prisma.page.findMany({
+      where: { ...(auditId ? { auditId } : {}), aiEvaluationRaw: { contains: '"RUNNING"' } },
+      select: { id: true, aiEvaluationRaw: true }
+    });
+    const interrupted = (serp: SerpAnalysis): SerpAnalysis =>
+      serp.status === 'RUNNING' ? { ...serp, status: 'PENDING', message: 'Interrompue : reprenez la mesure' } : serp;
+    for (const page of pages) {
+      const stored = this.parseJson<{ serp?: SerpAnalysis; serpQueries?: SerpAnalysis[] }>(page.aiEvaluationRaw);
+      if (!stored) continue;
+      const running = stored.serp?.status === 'RUNNING' || (stored.serpQueries ?? []).some((serp) => serp.status === 'RUNNING');
+      if (!running) continue;
+      await prisma.page.update({
+        where: { id: page.id },
+        data: {
+          aiEvaluationRaw: JSON.stringify({
+            ...stored,
+            ...(stored.serp ? { serp: interrupted(stored.serp) } : {}),
+            ...(stored.serpQueries ? { serpQueries: stored.serpQueries.map(interrupted) } : {})
+          })
+        }
+      });
+    }
+  }
+
+  /**
+   * Avis de l'IA sur les résultats Google d'une page, rédigé à partir des seuls faits mesurés (construits ici, côté
+   * serveur). Enregistré avec la liste des relevés sur lesquels il repose : une nouvelle mesure le rend périmé.
+   */
+  public static async serpOpinion(auditId: string, pageId: string): Promise<{ text: string; model: string; basedOn: string[] }> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, include: { audit: { include: { project: true } } } });
+    if (!page) throw new Error('Page introuvable');
+    if (!llmGateway.isConfigured()) throw new Error('Aucun fournisseur IA configuré');
+    const stored = this.parseJson<Record<string, unknown> & { serp?: SerpAnalysis; serpQueries?: SerpAnalysis[] }>(page.aiEvaluationRaw) ?? {};
+    const measures = (stored.serpQueries?.length ? stored.serpQueries : stored.serp ? [stored.serp] : []).filter(
+      (serp) => serp.status === 'DONE'
+    );
+    if (measures.length === 0) throw new Error('Aucune mesure Google terminée pour cette page');
+    const facts = serpFacts({ measures, pageUrl: page.url, ownDomain: page.audit.project.domain, pageWords: page.wordCount });
+    const opinion = await llmGateway.serpOpinion(facts);
+    const result = { ...opinion, basedOn: measures.map((serp) => serp.fetchedAt ?? '').sort() };
+    await prisma.page.update({
+      where: { id: page.id },
+      data: { aiEvaluationRaw: JSON.stringify({ ...stored, serpOpinion: { ...result, createdAt: new Date().toISOString() } }) }
+    });
+    return result;
+  }
+
+  /** Recherches Google envoyées aujourd'hui, tous projets confondus */
+  public static async serpUsageToday(): Promise<number> {
+    const usage = await prisma.serpUsage.findUnique({ where: { day: usageDay() } });
+    return usage?.searches ?? 0;
+  }
+
+  private static async countSerpSearches(count: number) {
+    if (count <= 0) return;
+    const day = usageDay();
+    await prisma.serpUsage.upsert({
+      where: { day },
+      create: { day, searches: count },
+      update: { searches: { increment: count } }
+    });
+  }
+
+  private static emptySerp(
+    query: string,
+    status: SerpAnalysis['status'],
+    message?: string,
+    zone?: GeoZone
+  ): SerpAnalysis {
     return {
       status,
       ...(message ? { message } : {}),
+      ...(zone ? { zone: zoneTag(zone), sentQuery: queryForZone(query, zone) } : {}),
       query,
       results: [],
       ownPosition: null,
@@ -1249,114 +1654,183 @@ export class AuditService {
   }
 
   /**
-   * Requêtes mesurées pour une page : la requête cible d'abord, puis les candidates (suggérées par Google d'abord),
-   * 3 au plus. Une requête déduite d'une page locale reçoit la ville, sinon la position dépend du lieu de la machine ;
-   * une requête saisie par l'utilisateur est envoyée telle quelle.
+   * Note la requête cible décochée par l'utilisateur pour ce lancement (`serpTargetSkipped`) : le relevé principal porte
+   * alors sur une autre requête, sans être présenté comme une mesure périmée. Effacée si la cible est mesurée.
    */
-  private static serpQueriesOf(page: Page): string[] {
-    const editorial = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial;
-    const candidates =
-      editorial?.search?.candidates ??
-      this.parseJson<{ keptCandidates?: QueryCandidate[] }>(page.metricsRaw)?.keptCandidates ??
-      [];
-    const local = editorial?.search?.local;
-    const withCity = (query: string) =>
-      !local?.isLocalBusiness || !local.city || normalizeText(query).includes(normalizeText(local.city))
-        ? query
-        : `${query} ${local.city}`;
-    const target = (page.targetQuery || page.h1 || page.title || '').trim();
-    const first = page.targetQuerySource === 'MANUAL' ? target : withCity(target);
-    return serpQueriesFor(first, candidates).map((query, index) => (index === 0 ? query : withCity(query)));
+  private static async markTargetSkipped(page: Page, list: string[]) {
+    const stored = this.parseJson<Record<string, unknown> & { editorial?: EditorialEvaluation }>(page.aiEvaluationRaw) ?? {};
+    const target = stored.editorial?.search?.targetQuery.query ?? page.targetQuery ?? undefined;
+    const skipped = target && !list.some((query) => normalizeText(query) === normalizeText(target)) ? target : undefined;
+    if ((stored.serpTargetSkipped ?? undefined) === skipped) return;
+    if (skipped) stored.serpTargetSkipped = skipped;
+    else delete stored.serpTargetSkipped;
+    await prisma.page.update({ where: { id: page.id }, data: { aiEvaluationRaw: JSON.stringify(stored) } });
   }
 
-  private static async runSerpJob(pages: Page[], domain: string, provider: SerpProviderPort) {
+  /**
+   * Requêtes mesurées pour une page, sans lieu : la requête cible d'abord, puis les candidates (suggérées par Google
+   * d'abord), 3 au plus. Les lieux sont retirés des requêtes proposées ou déduites (une requête saisie reste telle
+   * quelle) ; la zone choisie est ajoutée à la fin au moment de la mesure (`queryForZone`), et sans zone rien n'est
+   * ajouté.
+   */
+  private static serpQueriesOf(page: Page, places: string[]): string[] {
+    const editorial = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial;
+    const candidates = (
+      editorial?.search?.candidates ??
+      this.parseJson<{ keptCandidates?: QueryCandidate[] }>(page.metricsRaw)?.keptCandidates ??
+      []
+    ).map((candidate) => ({ ...candidate, query: stripPlaces(candidate.query, places) || candidate.query }));
+    const target = (page.targetQuery || page.h1 || page.title || '').trim();
+    const first = page.targetQuerySource === 'MANUAL' ? target : stripPlaces(target, places) || target;
+    return serpQueriesFor(first, candidates);
+  }
+
+  /**
+   * Exécute les recherches dans l'ordre de priorité (requête cible de chaque page d'abord, pages stratégiques en tête),
+   * dans la limite du budget. Chaque page de résultats demandée à Google compte ; une réponse du cache ne compte pas.
+   * Budget épuisé : la recherche reste en attente ; pas assez pour les pages 2 et 3 : seul le Top 10 est lu ; pas
+   * assez pour un re-test : la première mesure est gardée. Captcha : tout ce qui reste passe en attente.
+   */
+  private static async runSerpJob(
+    jobs: SerpJob[],
+    domain: string,
+    provider: SerpProviderPort,
+    budget: SerpBudget,
+    usedTodayAtStart: number
+  ) {
     const pause = () => new Promise((resolve) => setTimeout(resolve, 4000 + Math.random() * 4000));
     const rankOf = (serp: SerpAnalysis) => serp.pagePosition ?? serp.pageSitelinkOf ?? null;
-    let searches = 0;
+    let usedInRun = 0;
+    let usedToday = usedTodayAtStart;
+    let requested = false;
+    const remaining = () => remainingSearches(budget, usedInRun, usedToday);
+    const count = async (requests: number) => {
+      jobRegistry.beatSerp();
+      usedInRun += requests;
+      usedToday += requests;
+      if (requests > 0) requested = true;
+      await this.countSerpSearches(requests);
+    };
+    // Pause entre deux vraies recherches seulement (une réponse du cache n'en demande pas)
+    const politePause = async () => {
+      if (requested) await pause();
+    };
+    const budgetMessage = `En attente : budget de recherches atteint (${budget.perRun} par lancement, ${budget.perDay} par jour)`;
 
-    for (let index = 0; index < pages.length; index++) {
-      const page = pages[index];
-      const queries = this.serpQueriesOf(page);
+    const tasks = prioritizeSearches(jobs)
+      .map((task) => ({ ...task, index: task.queryIndex * task.page.zoneCount + task.zoneIndex }))
+      .filter(({ page: job, index }) => job.todo.has(index));
+    for (let t = 0; t < tasks.length; t++) {
+      const { page: job, queryIndex: q, zoneIndex: z, index: slot } = tasks[t];
+      const { page, queries, analyses } = job;
+      const query = queries[q];
+      const zone = job.zones[z];
+      // Texte envoyé à Google : la requête suivie du nom de la zone (« agence web oise ») ; sans zone, la requête seule
+      const sent = queryForZone(query, zone);
+
+      if (remaining() < 1) {
+        analyses[slot] = this.emptySerp(query, 'PENDING', budgetMessage, zone);
+        await this.saveSerp(page, analyses[0], analyses);
+        continue;
+      }
+
       const metrics = this.parseJson<{ content?: ContentSnapshot }>(page.metricsRaw);
       const ourText = `${(metrics?.content?.headings ?? []).map((h) => h.text).join(' ')} ${metrics?.content?.excerpt ?? ''}`;
       const history = this.parseJson<{ serpHistory?: SerpHistoryEntry[] }>(page.aiEvaluationRaw)?.serpHistory ?? [];
-      const analyses: SerpAnalysis[] = queries.map((query) => this.emptySerp(query, 'RUNNING'));
+      try {
+        if (!query) throw new Error('Aucune requête cible pour cette page');
+        await politePause();
+        const brandQuery = brandVariants(domain).some((brand) => normalizeText(sent).includes(brand));
+        let topOnly = false;
 
-      for (let q = 0; q < queries.length; q++) {
-        const query = queries[q];
-        try {
-          if (!query) throw new Error('Aucune requête cible pour cette page');
-          if (searches++ > 0) await pause();
-          const brandQuery = brandVariants(domain).some((brand) => normalizeText(query).includes(brand));
-
-          // Mesure : première page de Google ; si la page n'y est pas (hors requête de marque), pages 2 et 3, pour voir
-          // les positions 11 à 30, celles où un effort éditorial rapporte le plus. Les concurrents ne sont lus que pour
-          // la requête cible (écarts de sections du pilier éditorial).
-          const measure = async (fresh: boolean) => {
-            const first = await provider.search(query, { domain, fresh });
-            let results = first.results;
-            const quick = buildSerpAnalysis({ query, fetchedAt: '', results, domain, pageUrl: page.url, competitors: [], ourText: '' });
-            if (!brandQuery && rankOf(quick) === null) {
-              await pause();
-              const deeper = await provider.search(query, { domain, pages: 2, start: 1, fresh });
+        // Mesure : première page de Google ; si la page n'y est pas (hors requête de marque), pages 2 et 3, pour voir
+        // les positions 11 à 30, celles où un effort éditorial rapporte le plus. Les concurrents ne sont lus que pour
+        // la requête cible (écarts de sections du pilier éditorial).
+        const measure = async (fresh: boolean) => {
+          const first = await provider.search(sent, { domain, fresh });
+          await count(first.requests);
+          let results = first.results;
+          const quick = buildSerpAnalysis({ query, fetchedAt: '', results, domain, pageUrl: page.url, competitors: [], ourText: '' });
+          if (!brandQuery && rankOf(quick) === null) {
+            if (remaining() >= 2) {
+              await politePause();
+              const deeper = await provider.search(sent, { domain, pages: 2, start: 1, fresh });
+              await count(deeper.requests);
               results = [...results, ...deeper.results];
+            } else {
+              topOnly = true;
             }
-            const competitors = q === 0 ? await this.readCompetitors(results, domain) : [];
-            return buildSerpAnalysis({
-              query,
-              fetchedAt: new Date().toISOString(),
-              results,
-              domain,
-              pageUrl: page.url,
-              competitors,
-              ourText,
-              features: first.features
-            });
-          };
+          }
+          // Concurrents lus pour la requête visée dans la zone principale seulement (écarts de sections)
+          const competitors = q === 0 && z === 0 ? await this.readCompetitors(results, domain) : [];
+          return buildSerpAnalysis({
+            query,
+            fetchedAt: new Date().toISOString(),
+            results,
+            domain,
+            pageUrl: page.url,
+            competitors,
+            ourText,
+            features: first.features
+          });
+        };
 
-          let analysis: SerpAnalysis = { ...(await measure(false)), provider: provider.id };
-          // Re-test automatique si la position s'écarte de plus de 3 rangs du relevé précédent (ou apparaît / disparaît) :
-          // une mesure isolée peut fluctuer. La seconde mesure est retenue, la première est gardée pour mémoire.
-          // Comparaison avec un relevé du même fournisseur seulement : Chrome local et API ne mesurent pas pareil
-          const previous = history
-            .filter((entry) => entry.query === query && (entry.provider ?? 'browser') === provider.id)
-            .at(-1);
-          if (previous) {
-            const before = previous.pagePosition ?? previous.sitelinkOf ?? null;
-            const now = rankOf(analysis);
-            const moved = before === null || now === null ? before !== now : Math.abs(before - now) > 3;
-            if (moved) {
-              await pause();
-              const retest = await measure(true);
-              analysis = { ...retest, provider: provider.id, retest: { firstRank: now, previousRank: before } };
-            }
+        let analysis: SerpAnalysis = { ...(await measure(false)), provider: provider.id };
+        // Re-test automatique si la position s'écarte de plus de 3 rangs du relevé précédent (ou apparaît / disparaît) :
+        // une mesure isolée peut fluctuer. La seconde mesure est retenue, la première est gardée pour mémoire.
+        // Comparaison avec un relevé du même fournisseur seulement : Chrome local et API ne mesurent pas pareil
+        const previous = history
+          .filter(
+            (entry) => entry.query === query && entry.zone === zone?.id && (entry.provider ?? 'browser') === provider.id
+          )
+          .at(-1);
+        if (previous && remaining() >= 1) {
+          const before = previous.pagePosition ?? previous.sitelinkOf ?? null;
+          const now = rankOf(analysis);
+          const moved = before === null || now === null ? before !== now : Math.abs(before - now) > 3;
+          if (moved) {
+            await politePause();
+            const retest = await measure(true);
+            analysis = { ...retest, provider: provider.id, retest: { firstRank: now, previousRank: before } };
           }
-          analyses[q] = analysis;
-          await this.saveSerp(page, analyses[0], analyses);
-        } catch (err: any) {
-          const blocked = err instanceof SerpBlockedError;
-          analyses[q] = this.emptySerp(query, blocked ? 'BLOCKED' : 'ERROR', err?.message ?? 'Erreur inconnue');
-          console.error(`[AuditService] SERP en échec pour « ${query} » : ${err?.message ?? err}`);
-          if (blocked) {
-            // Captcha : inutile d'insister sur les requêtes suivantes, de cette page comme des autres
-            const cancelled = 'Annulée : captcha ou blocage sur une requête précédente';
-            for (let rest = q + 1; rest < queries.length; rest++) analyses[rest] = this.emptySerp(queries[rest], 'ERROR', cancelled);
-            await this.saveSerp(page, analyses[0], analyses);
-            for (const other of pages.slice(index + 1)) {
-              const list = this.serpQueriesOf(other);
-              await this.saveSerp(
-                other,
-                this.emptySerp(list[0], 'ERROR', cancelled),
-                list.map((query) => this.emptySerp(query, 'ERROR', cancelled))
-              );
-            }
-            return;
-          }
-          await this.saveSerp(page, analyses[0], analyses);
         }
+        if (topOnly) {
+          analysis = { ...analysis, message: 'Top 10 seulement : budget insuffisant pour lire les pages 2 et 3' };
+        }
+        analyses[slot] = { ...analysis, ...(zone ? { zone: zoneTag(zone), sentQuery: sent } : {}) };
+        await this.saveSerp(page, analyses[0], analyses);
+      } catch (err: any) {
+        // Une recherche en échec a pu partir vers Google : elle compte
+        await count(1);
+        const blocked = err instanceof SerpBlockedError;
+        console.error(`[AuditService] SERP en échec pour « ${sent} » : ${err?.message ?? err}`);
+        if (blocked) {
+          // Captcha : inutile d'insister ; cette recherche et toutes les suivantes restent en attente, à reprendre
+          const waiting = 'En attente : captcha ou blocage, à reprendre plus tard';
+          analyses[slot] = this.emptySerp(query, 'PENDING', waiting, zone);
+          for (const rest of tasks.slice(t + 1)) {
+            rest.page.analyses[rest.index] = this.emptySerp(
+              rest.page.queries[rest.queryIndex],
+              'PENDING',
+              waiting,
+              rest.page.zones[rest.zoneIndex]
+            );
+          }
+          for (const other of jobs) await this.saveSerp(other.page, other.analyses[0], other.analyses);
+          return;
+        }
+        analyses[slot] = this.emptySerp(query, 'ERROR', err?.message ?? 'Erreur inconnue', zone);
+        await this.saveSerp(page, analyses[0], analyses);
       }
+    }
 
-      await this.switchToMeasuredQuery(page.id, domain, analyses);
+    // Choix d'une meilleure requête cible d'après la zone principale (une mesure par requête)
+    for (const job of jobs) {
+      await this.switchToMeasuredQuery(
+        job.page.id,
+        domain,
+        job.analyses.filter((_, index) => index % job.zoneCount === 0)
+      );
     }
   }
 
@@ -1433,8 +1907,16 @@ export class AuditService {
     if (!page) throw new Error('Page introuvable');
 
     const metrics = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
+    const previous = (metrics.roleOverride as PageRole | undefined) ?? this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial?.role;
     if (role) metrics.roleOverride = role;
     else delete metrics.roleOverride;
+    // Passage entre un rôle à recherches génériques et contact / utilitaire : la requête déduite et les candidates
+    // ne valent plus, la prochaine analyse IA les repropose (une requête saisie est gardée)
+    const brandOnly = (value?: PageRole | null) => value === 'contact' || value === 'utility';
+    if (brandOnly(previous) !== brandOnly(role ?? undefined)) {
+      delete metrics.keptCandidates;
+      if (page.targetQuerySource !== 'MANUAL') delete metrics.keptQuery;
+    }
     const updated = await prisma.page.update({ where: { id: pageId }, data: { metricsRaw: JSON.stringify(metrics) } });
 
     await this.rescoreEditorial(updated);
@@ -1447,16 +1929,272 @@ export class AuditService {
   }
 
   /**
+   * Fixe l'objectif d'une page (null : retour à celui du rôle). « Aller droit au but » ne demande aucun nouvel avis de
+   * l'IA : la couverture du sujet sort simplement du score. Passer à « couvrir le sujet » ou « présenter et
+   * convaincre » alors que l'IA a jugé la page sous un autre objectif relance son analyse (une page, un appel), car
+   * ce qu'elle propose n'est pas le même.
+   */
+  public static async setPageGoal(auditId: string, pageId: string, goal: PageGoal | null) {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId } });
+    if (!page) throw new Error('Page introuvable');
+
+    const metrics = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
+    if (goal) metrics.goalOverride = goal;
+    else delete metrics.goalOverride;
+    const updated = await prisma.page.update({ where: { id: pageId }, data: { metricsRaw: JSON.stringify(metrics) } });
+
+    // Le cache de l'analyse tient compte de l'objectif : sans changement pour l'IA, seul le score est recalculé
+    const stored = this.parseJson<{ editorial?: EditorialEvaluation }>(updated.aiEvaluationRaw)?.editorial;
+    if (updated.isPillar && stored && goal !== 'direct') {
+      await this.reanalyzePage(auditId, pageId);
+      return;
+    }
+
+    await this.rescoreEditorial(updated);
+    const audit = await prisma.audit.findUnique({ where: { id: auditId } });
+    if (audit?.status === 'COMPLETED') {
+      await this.refreshSiteCoherence(auditId, false);
+      await this.finalizeAudit(auditId);
+    }
+  }
+
+  /**
+   * Mots-clés de la page et leur volume de recherche (Keyword Planner, ou source de démonstration) : graines tirées de
+   * la requête visée, des recherches proposées, du Title, du H1 et des H2. Enregistré dans
+   * l'analyse de la page (`keywords`), sans effet sur la note. Source absente ou en échec : liste sans volumes.
+   */
+  public static async researchKeywords(auditId: string, pageId: string): Promise<KeywordResearch> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, include: { audit: { select: { project: { select: { domain: true } } } } } });
+    if (!page) throw new Error('Page introuvable');
+
+    const stored = this.parseJson<Record<string, unknown> & { editorial?: EditorialEvaluation }>(page.aiEvaluationRaw) ?? {};
+    const search = stored.editorial?.search;
+    const research = await this.buildKeywordResearch(
+      page,
+      page.audit.project.domain,
+      search?.targetQuery.query ?? page.targetQuery ?? undefined,
+      search?.candidates,
+      {
+        problem: search?.problem,
+        role: this.parseJson<{ roleOverride?: PageRole }>(page.metricsRaw)?.roleOverride ?? stored.editorial?.role
+      }
+    );
+    // Source en échec (coupure, quota) : les volumes déjà enregistrés sont gardés plutôt qu'effacés
+    const kept = this.keepPreviousKeywords(stored.keywords as KeywordResearch | undefined, research);
+    const updated = await prisma.page.update({
+      where: { id: page.id },
+      data: { aiEvaluationRaw: JSON.stringify({ ...stored, keywords: kept }) }
+    });
+    // Les volumes forment le groupe de requêtes notées : note recalculée sans appel à l'IA
+    await this.rescoreEditorial(updated);
+    return research;
+  }
+
+  /**
+   * Nouvelle recherche en échec (coupure réseau, quota) alors qu'une recherche précédente avait des volumes : la
+   * précédente est gardée, avec le message d'erreur, pour ne pas effacer les requêtes notées
+   */
+  private static keepPreviousKeywords(previous: KeywordResearch | undefined, fresh: KeywordResearch): KeywordResearch {
+    const hadVolumes = previous && !previous.error && previous.rows.some((row) => (row.avgMonthlySearches ?? 0) > 0);
+    // Tri de l'IA indisponible cette fois : les avis du tri précédent sont repris pour les mêmes mots-clés
+    if (!fresh.error && previous && !fresh.rows.some((row) => row.relevance) && previous.rows.some((row) => row.relevance)) {
+      const verdicts = new Map(previous.rows.filter((row) => row.relevance).map((row) => [row.keyword, row.relevance]));
+      fresh = { ...fresh, rows: fresh.rows.map((row) => (verdicts.has(row.keyword) ? { ...row, relevance: verdicts.get(row.keyword) } : row)) };
+    }
+    return fresh.error && hadVolumes
+      ? { ...previous, warning: `${fresh.error} : volumes du ${new Date(previous.fetchedAt).toLocaleDateString('fr-FR')} gardés` }
+      : fresh;
+  }
+
+  /** Mots-clés de la page et leurs volumes (source configurée), sans rien enregistrer */
+  private static async buildKeywordResearch(
+    page: Page,
+    domain: string,
+    target: string | undefined,
+    candidates: QueryCandidate[] | undefined,
+    /** Problématique et rôle de la page : l'IA juge les mots-clés par rapport à eux */
+    context: { problem?: string; role?: PageRole } = {}
+  ): Promise<KeywordResearch> {
+    const snapshot = this.parseJson<{ content?: ContentSnapshot }>(page.metricsRaw)?.content;
+    const brands = brandVariants(domain);
+    const seeds = keywordSeeds({
+      target,
+      candidates: candidates?.map((candidate) => candidate.query),
+      title: page.title,
+      h1: page.h1,
+      headings: snapshot?.headings,
+      brands,
+      places: await this.placeNamesFor(page)
+    });
+
+    const provider = keywordVolumeProvider();
+    let result: Awaited<ReturnType<NonNullable<typeof provider>['ideas']>> | null = null;
+    let error: string | undefined;
+    if (provider && seeds.length > 0) {
+      try {
+        result = await provider.ideas(seeds.map((seed) => seed.keyword), { url: page.url });
+      } catch (err: any) {
+        error = err?.message ?? 'Source des volumes indisponible';
+      }
+    }
+
+    const rows = buildKeywordRows(
+      seeds,
+      result,
+      { title: page.title, h1: page.h1, headings: snapshot?.headings ?? [], text: snapshot?.excerpt ?? '' },
+      brands
+    );
+    // Avis de l'IA sur les recherches qui ont un volume réel : la page y répond-elle ? Seules celles-ci sont notées
+    // d'office. Volumes simulés ou IA indisponible : pas d'avis, les règles de mots communs s'appliquent
+    const toJudge = rows
+      .filter((row) => (row.avgMonthlySearches ?? 0) >= MIN_SCORED_VOLUME)
+      .slice(0, MAX_JUDGED_KEYWORDS);
+    if (provider && provider.id !== 'mock' && !error && toJudge.length > 0 && llmGateway.isConfigured()) {
+      try {
+        const verdicts = await llmGateway.judgeKeywords({
+          url: page.url,
+          problem: context.problem,
+          role: context.role,
+          title: page.title ?? undefined,
+          h1: page.h1 ?? undefined,
+          headings: snapshot?.headings ?? [],
+          excerpt: snapshot?.excerpt ?? '',
+          keywords: toJudge.map((row) => row.keyword)
+        });
+        // Texte où chercher la preuve : Title, H1, sous-titres et début du contenu
+        const pageText = [page.title, page.h1, ...(snapshot?.headings ?? []).map((h) => h.text), snapshot?.excerpt].filter(Boolean).join(' ');
+        for (const row of toJudge) {
+          // Recherche oubliée par le modèle : ni notée d'office, ni écartée (« plus large »). « Visée » sans phrase de
+          // la page qui le prouve : « plus large »
+          const verdict = verdicts.find((item) => item.keyword === row.keyword);
+          row.relevance =
+            verdict?.verdict === 'match' && !matchEvidenceVerified(row.keyword, verdict.evidence, pageText)
+              ? 'broad'
+              : verdict?.verdict ?? 'broad';
+        }
+      } catch (err: any) {
+        console.warn(`[AuditService] Avis de l'IA sur les mots-clés indisponible pour ${page.url} : ${err?.message ?? err}`);
+      }
+    }
+    return {
+      provider: provider?.id ?? null,
+      simulated: provider?.id === 'mock',
+      fetchedAt: new Date().toISOString(),
+      ...(error ? { error } : {}),
+      rows
+    };
+  }
+
+  /**
+   * Fixe les requêtes notées d'une page (null : retour au choix automatique, par les volumes). Note recalculée sans
+   * l'IA ; l'intention d'une requête ajoutée sera jugée à la prochaine analyse de la page.
+   */
+  public static async setQuerySet(auditId: string, pageId: string, queries: string[] | null) {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId } });
+    if (!page) throw new Error('Page introuvable');
+    const metrics = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
+    if (queries && queries.length > 0) metrics.querySetOverride = queries;
+    else delete metrics.querySetOverride;
+    const updated = await prisma.page.update({ where: { id: pageId }, data: { metricsRaw: JSON.stringify(metrics) } });
+    await this.rescoreEditorial(updated);
+    const audit = await prisma.audit.findUnique({ where: { id: auditId } });
+    if (audit?.status === 'COMPLETED') {
+      await this.refreshSiteCoherence(auditId, false);
+      await this.finalizeAudit(auditId);
+    }
+  }
+
+  /**
+   * Réécriture proposée des titres et sections d'une page par l'IA (un appel), selon son objectif, avec la requête
+   * principale et les recherches secondaires de la couverture des recherches. Enregistrée dans l'analyse (`rewrite`),
+   * sans effet sur la note ; la proposition existante est rendue telle quelle si rien n'a changé, sauf `force`.
+   */
+  public static async proposeRewrite(auditId: string, pageId: string, options: { force?: boolean } = {}): Promise<PageRewrite> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, include: { audit: { select: { project: { select: { domain: true } } } } } });
+    if (!page) throw new Error('Page introuvable');
+    if (!llmGateway.isConfigured()) throw new Error('Aucun fournisseur IA configuré');
+
+    const stored = this.parseJson<Record<string, unknown> & { editorial?: EditorialEvaluation; keywords?: KeywordResearch; rewrite?: PageRewrite }>(
+      page.aiEvaluationRaw
+    ) ?? {};
+    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; goalOverride?: PageGoal }>(page.metricsRaw);
+    const snapshot = metrics?.content;
+    if (!snapshot) throw new Error('Contenu de la page non enregistré : relancez l’audit');
+
+    const role = resolvePageRole({
+      manual: metrics?.roleOverride,
+      ai: stored.editorial?.role,
+      detected: classifyPageRole({
+        path: page.path,
+        depth: page.depth,
+        hasPublicationDate: snapshot.hasPublicationDate,
+        wordCount: page.wordCount,
+        schemaTypes: snapshot.schemaTypes,
+        ...snapshot.roleSignals
+      })
+    }).role;
+    const { goal } = resolveGoal({ manual: metrics?.goalOverride, role });
+    // Requêtes notées, de la plus lourde à la plus légère : la première sert de requête principale
+    const querySet = [...(stored.editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight);
+    const principal = querySet[0]?.query ?? stored.editorial?.search?.targetQuery.query ?? page.targetQuery ?? page.h1 ?? page.title ?? '';
+    const basedOn = { contentHash: page.contentHash ?? '', goal, principal };
+    if (!options.force && stored.rewrite && JSON.stringify(stored.rewrite.basedOn) === JSON.stringify(basedOn)) return stored.rewrite;
+
+    const secondaries = querySet.slice(1).map((entry) => ({ keyword: entry.query }));
+    const proposal = await llmGateway.proposeRewrite({
+      url: page.url,
+      domain: page.audit.project.domain,
+      role,
+      goal,
+      title: page.title ?? undefined,
+      metaDescription: page.metaDescription ?? undefined,
+      h1: page.h1 ?? undefined,
+      headings: snapshot.headings,
+      excerpt: snapshot.excerpt,
+      principal,
+      secondaries: secondaries.map((item) => item.keyword)
+    });
+    const rewrite: PageRewrite = { ...proposal, createdAt: new Date().toISOString(), basedOn };
+    await prisma.page.update({ where: { id: page.id }, data: { aiEvaluationRaw: JSON.stringify({ ...stored, rewrite }) } });
+    return rewrite;
+  }
+
+  /**
+   * Recalcule, sans appel à l'IA, la note éditoriale de tous les piliers d'un audit à partir des analyses
+   * enregistrées, puis le score du site : applique un nouveau barème aux audits existants.
+   */
+  public static async rescoreAudit(auditId: string) {
+    const pillars = await prisma.page.findMany({ where: { auditId, isPillar: true } });
+    for (const page of pillars) await this.rescoreEditorial(page);
+    const audit = await prisma.audit.findUnique({ where: { id: auditId } });
+    if (audit?.status === 'COMPLETED') {
+      await this.refreshSiteCoherence(auditId, false);
+      await this.finalizeAudit(auditId);
+    }
+    return pillars.length;
+  }
+
+  /**
    * Recalcule le score éditorial d'un pilier déjà analysé à partir de l'évaluation enregistrée, sans appel à l'IA :
    * après une correction du rôle, ou quand une mesure Google (SERP) remplace une estimation.
    */
   private static async rescoreEditorial(page: Page) {
-    const stored = this.parseJson<{ editorial?: EditorialEvaluation; serp?: SerpAnalysis; geo?: GeoEvaluation }>(page.aiEvaluationRaw);
-    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole }>(page.metricsRaw);
+    const stored = this.parseJson<{
+      editorial?: EditorialEvaluation;
+      serp?: SerpAnalysis;
+      serpQueries?: SerpAnalysis[];
+      geo?: GeoEvaluation;
+    }>(page.aiEvaluationRaw);
+    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; goalOverride?: PageGoal }>(page.metricsRaw);
     if (!page.isPillar || !stored?.editorial || !metrics?.content) return;
 
-    const raw = this.toRawPage(page, metrics.content, metrics.roleOverride);
-    const result = EditorialScoringEngine.calculate(raw, stored.editorial, stored.serp);
+    const raw = this.toRawPage(page, metrics.content, metrics.roleOverride, metrics.goalOverride);
+    const result = EditorialScoringEngine.calculate(
+      raw,
+      stored.editorial,
+      serpForQuery(stored.editorial.search?.targetQuery.query, stored.serp, stored.serpQueries),
+      stored.serpQueries ?? []
+    );
     // GEO recalculé avec le même rôle : la citabilité est sans objet sur une page de contact ou utilitaire
     const geo = stored.geo ? GeoScoringEngine.calculate(raw, stored.geo) : undefined;
     const geoScore = geo?.score ?? page.geoScore ?? 0;
@@ -1543,7 +2281,7 @@ export class AuditService {
   }
 
   /** Reconstitue le RawPageData minimal requis par les moteurs de scoring à partir de la base */
-  private static toRawPage(page: Page, snapshot: ContentSnapshot, roleOverride?: PageRole): RawPageData {
+  private static toRawPage(page: Page, snapshot: ContentSnapshot, roleOverride?: PageRole, goalOverride?: PageGoal): RawPageData {
     return {
       url: page.url,
       path: page.path,
@@ -1576,7 +2314,10 @@ export class AuditService {
       bodyText: snapshot.excerpt,
       editorialSignals: snapshot.signals,
       roleSignals: snapshot.roleSignals,
-      roleOverride
+      roleOverride,
+      goalOverride,
+      keywordResearch: this.parseJson<{ keywords?: KeywordResearch }>(page.aiEvaluationRaw)?.keywords,
+      querySetOverride: this.parseJson<{ querySetOverride?: string[] }>(page.metricsRaw)?.querySetOverride
     };
   }
 }

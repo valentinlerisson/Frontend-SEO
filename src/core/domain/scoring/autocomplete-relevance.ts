@@ -35,9 +35,13 @@ export function contentTokens(value: string): string[] {
     .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
 }
 
-/** Variantes de la marque tirées du domaine : « big-happy.fr » donne « big happy » et « bighappy » */
+/**
+ * Variantes de la marque tirées du domaine : « big-happy.fr » donne « big happy » et « bighappy ». Le nom est le label
+ * placé avant l'extension : « fr.yamaha.com » donne « yamaha », pas « fr ».
+ */
 export function brandVariants(domain: string): string[] {
-  const label = domain.replace(/^www\./, '').split('.')[0].toLowerCase();
+  const parts = domain.replace(/^www\./, '').toLowerCase().split('.');
+  const label = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
   const spaced = normalizeText(label);
   return Array.from(new Set([spaced, spaced.replace(/ /g, '')])).filter((variant) => variant.length >= 3);
 }
@@ -103,3 +107,52 @@ export function filterRelevantSuggestions(seed: string, suggestions: string[]): 
     return matched >= needed;
   });
 }
+
+/**
+ * Graines à essayer pour une requête qui n'obtient pas de suggestion : la requête, puis sans les lieux (ville ou zone
+ * ciblée), puis ses 3 puis 2 premiers mots porteurs de sens (« accompagnement des familles ehpad » donne
+ * « accompagnement familles ehpad », puis « accompagnement familles »). Les accents des mots gardés sont conservés.
+ */
+export function suggestionSeeds(query: string, places: string[] = []): string[] {
+  const placeTokens = new Set(places.flatMap((place) => normalizeText(place).split(' ')).filter(Boolean));
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  const withoutPlaces = words.filter((word) => !placeTokens.has(normalizeText(word)));
+  const meaningful = withoutPlaces.filter((word) => contentTokens(word).length > 0);
+  const seeds = [words.join(' '), withoutPlaces.join(' '), meaningful.slice(0, 3).join(' '), meaningful.slice(0, 2).join(' ')];
+  const unique: string[] = [];
+  for (const seed of seeds) {
+    if (seed && isUsableSeed(seed) && !unique.some((item) => normalizeText(item) === normalizeText(seed))) unique.push(seed);
+  }
+  return unique;
+}
+
+/** Mots de liaison laissés en fin de recherche après le retrait d'un lieu (« agence web à ») */
+const TRAILING_LINK = /^(a|à|en|sur|dans|de|du|des|pres|près|autour|vers)$/i;
+
+/**
+ * Recherche sans lieu : retire les noms donnés (zones ciblées, ville de la page, y compris composés comme
+ * « Eure-et-Loir »), les codes postaux et les numéros de département entre parenthèses (« (60) »).
+ * « agence web chartres » donne « agence web ». Les recherches proposées sont mesurées sans lieu ; la zone choisie
+ * est ajoutée au moment de la mesure.
+ */
+export function stripPlaces(query: string, places: string[]): string {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  const sequences = places
+    .map((place) => normalizeText(place).split(' ').filter(Boolean))
+    .filter((sequence) => sequence.length > 0)
+    .sort((a, b) => b.length - a.length);
+  const kept: string[] = [];
+  for (let i = 0; i < words.length; ) {
+    const word = normalizeText(words[i]);
+    // Lieu écrit d'un seul tenant (« eure-et-loir ») ou mot à mot (« eure et loir »)
+    const whole = sequences.find((sequence) => sequence.join(' ') === word);
+    const spread = whole ? undefined : sequences.find((sequence) => sequence.every((token, k) => normalizeText(words[i + k] ?? '') === token));
+    if (whole) i += 1;
+    else if (spread) i += spread.length;
+    else if (/^\d{5}$|^\(\d{2,3}\)$/.test(words[i])) i += 1;
+    else kept.push(words[i++]);
+  }
+  while (kept.length > 0 && TRAILING_LINK.test(kept[kept.length - 1])) kept.pop();
+  return kept.join(' ');
+}
+

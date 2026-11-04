@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SerpFeatures, SerpResult } from '@/core/domain/types';
-import { SerpBlockedError, type SerpProviderPort } from '@/core/ports/serp-provider';
+import { SerpBlockedError, type SerpLocation, type SerpProviderPort } from '@/core/ports/serp-provider';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Délai maximal d'une recherche : le navigateur attend jusqu'à 180 s qu'un captcha soit résolu à la main */
@@ -23,27 +23,29 @@ export class GoogleBrowserSerp implements SerpProviderPort {
 
   async search(
     query: string,
-    options: { pages?: number; start?: number; domain?: string; fresh?: boolean } = {}
-  ): Promise<{ results: SerpResult[]; features?: SerpFeatures }> {
+    options: { pages?: number; start?: number; domain?: string; fresh?: boolean; location?: SerpLocation } = {}
+  ): Promise<{ results: SerpResult[]; features?: SerpFeatures; requests: number }> {
     const pages = Math.max(1, Math.min(3, options.pages ?? (Number(process.env.SERP_PAGES) || 1)));
     const start = Math.max(0, Math.min(2, options.start ?? 0));
     const domain = (options.domain ?? '').toLowerCase().replace(/^www\./, '');
-    const cacheFile = this.cacheFile(query, pages, domain, start);
+    // Chaque lieu simulé a son propre cache : les résultats diffèrent d'une ville à l'autre
+    const uule = options.location?.uule ?? '';
+    const cacheFile = this.cacheFile(query, pages, domain, start, uule);
 
     const cached = options.fresh ? null : await this.readCache(cacheFile);
-    if (cached) return { results: cached.results, features: cached.features };
+    if (cached) return { results: cached.results, features: cached.features, requests: 0 };
 
-    const payload = await this.run(query, pages, domain, start);
+    const payload = await this.run(query, pages, domain, start, uule);
     // Une recherche sans aucun résultat extrait n'est pas une mesure : on ne la met pas en cache
     if (payload.results.length === 0) throw new Error('Aucun résultat extrait de la page Google');
     await fs.mkdir(this.cacheDir, { recursive: true });
     await fs.writeFile(cacheFile, JSON.stringify(payload));
-    return { results: payload.results, features: payload.features };
+    return { results: payload.results, features: payload.features, requests: pages };
   }
 
-  private cacheFile(query: string, pages: number, domain: string, start: number): string {
+  private cacheFile(query: string, pages: number, domain: string, start: number, uule: string): string {
     const key = createHash('sha1')
-      .update(`${query.toLowerCase().replace(/\s+/g, ' ').trim()}|${pages}|${domain}${start > 0 ? `|${start}` : ''}`)
+      .update(`${query.toLowerCase().replace(/\s+/g, ' ').trim()}|${pages}|${domain}${start > 0 ? `|${start}` : ''}${uule ? `|${uule}` : ''}`)
       .digest('hex');
     return path.join(this.cacheDir, `${key}.json`);
   }
@@ -58,13 +60,13 @@ export class GoogleBrowserSerp implements SerpProviderPort {
     }
   }
 
-  private run(query: string, pages: number, domain: string, start: number): Promise<Payload> {
+  private run(query: string, pages: number, domain: string, start: number, uule: string): Promise<Payload> {
     const profile = process.env.SERP_PROFILE_DIR || path.join(process.cwd(), '.serp-profile');
 
     return new Promise((resolve, reject) => {
       const child = spawn(
         process.execPath,
-        [this.script, query, '--pages', String(pages), '--start', String(start), '--profile', profile, '--timeout', '180', '--debug-dir', 'debug', ...(domain ? ['--domain', domain] : [])],
+        [this.script, query, '--pages', String(pages), '--start', String(start), '--profile', profile, '--timeout', '180', '--debug-dir', 'debug', ...(domain ? ['--domain', domain] : []), ...(uule ? ['--uule', uule] : [])],
         { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false }
       );
       let stdout = '';

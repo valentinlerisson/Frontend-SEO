@@ -397,8 +397,8 @@
   }
 }
 
-/* Export PDF d'une page (fiche d'inspection) : seule la feuille #page-print-sheet est imprimée */
-#page-print-sheet {
+/* Export PDF (rapport d'audit, fiche d'une page) : seule la feuille .print-sheet montée est imprimée */
+.print-sheet {
   display: none;
 }
 
@@ -412,15 +412,28 @@
     background: #fff !important;
   }
 
-  body > *:not(#page-print-sheet) {
+  body > *:not(.print-sheet) {
     display: none !important;
   }
 
-  #page-print-sheet {
+  .print-sheet {
     display: block !important;
     background: #fff;
     color: #111;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+
+  /* Rapport d'audit : couverture sur sa propre page, blocs jamais coupés en deux */
+  .report-cover {
+    break-after: page;
+  }
+
+  .report-section {
+    margin-top: 9mm;
+  }
+
+  .report-section h2 {
+    break-after: avoid;
   }
 }

@@ -12,7 +12,19 @@ export type PillarType = 'TECH' | 'EDITORIAL' | 'GEO';
 export type IssueSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 /** Rôle d'une page : adapte les attentes éditoriales (voir scoring/page-role.ts) */
-export type PageRole = 'home' | 'brand' | 'contact' | 'offer' | 'case' | 'article' | 'hub' | 'utility';
+/**
+ * Rôle d'une page. `article` : contenu daté et signé (actualité, billet, étude) ; `informational` : contenu qui
+ * informe sans être un article (guide, FAQ, glossaire, page « comment ça marche ») : auteur et date non exigés.
+ */
+/**
+ * Objectif de la page : ce qu'on en attend, donc ce que jugent ses 20 points « sujet ». cover : couvrir le sujet
+ * (guide, article) ; convince : présenter et convaincre (offre, accueil) ; convert : amener à une action (devis,
+ * inscription, don, rendez-vous) ; reassure : inspirer confiance (qui est derrière, preuves) ; showcase : raconter une
+ * réalisation (contexte, travail, résultat) ; direct : aller droit au but (contact, page courte volontaire).
+ */
+export type PageGoal = 'cover' | 'convince' | 'convert' | 'reassure' | 'showcase' | 'direct';
+
+export type PageRole = 'home' | 'brand' | 'contact' | 'offer' | 'case' | 'article' | 'informational' | 'hub' | 'utility';
 
 /** Indices lus dans le HTML pour déterminer le rôle d'une page */
 export interface RoleSignals {
@@ -116,6 +128,12 @@ export interface RawPageData {
   roleSignals?: RoleSignals;
   /** Rôle corrigé à la main par l'utilisateur : prioritaire sur la détection */
   roleOverride?: PageRole;
+  /** Objectif corrigé à la main par l'utilisateur : prioritaire sur celui déduit du rôle */
+  goalOverride?: PageGoal;
+  /** Mots-clés et volumes de la page : les plus recherchés forment le groupe de requêtes notées */
+  keywordResearch?: import('./keyword-research').KeywordResearch;
+  /** Requêtes notées choisies par l'utilisateur (cochées ou ajoutées) : remplacent le choix automatique */
+  querySetOverride?: string[];
   bodyText: string;
   /** Diagnostics éditoriaux objectifs, calculés au crawl sur le contenu principal (hors nav, header, footer) */
   editorialSignals?: EditorialSignals;
@@ -171,6 +189,13 @@ export interface ContentQualityInsights {
     genericFluff: string[];
     mentionsLimits: boolean;
     advice: string;
+    /**
+     * Extraits copiés de la page (vides si rien), vérifiés mot pour mot par le code pour la note « Qualité du
+     * contenu » : donnée ou méthode propre, cas concret, limite reconnue. Absents : analyse antérieure, non notée.
+     */
+    originalDataQuote?: string;
+    concreteCaseQuote?: string;
+    limitsQuote?: string;
   };
 }
 
@@ -233,8 +258,33 @@ export interface EditorialEvaluation {
     critique: string;
     actionableAdvice: string;
   };
-  /** Points réellement mesurés (critères sans objet ou non mesurables exclus) sur le total de 100 */
+  /** Points réellement mesurés (critères sans objet ou non mesurables exclus) sur le total possible (120) */
   coverage?: { measured: number; total: number };
+  /** Qualité du contenu (15 pts), calculée par le code sur les extraits vérifiés ; absente : non mesurée ou sans objet */
+  contentQuality?: {
+    score: number;
+    max: number;
+    checks: { experience: string[]; originalData?: string; concreteCase?: string; limits?: string };
+  };
+  /** Lisibilité mesurée (5 pts au plus) ; `max` : points réellement mesurables pour cette page */
+  readabilityPoints?: { score: number; max: number; paragraphs?: number; sentences?: number; structure: number };
+  /**
+   * Réponses de l'IA aux grilles à cases (identifiant de case vers vrai ou faux). Absentes : analyse antérieure,
+   * notée sur ses anciens paliers convertis. `goalKey` : objectif sous lequel la grille de l'objectif a été remplie.
+   */
+  checks?: {
+    intent: Record<string, boolean>;
+    opening: Record<string, boolean>;
+    openingQuote: string;
+    goal: Record<string, boolean>;
+    goalKey?: PageGoal;
+    /** Grille d'intention remplie pour chaque requête notée (prompt v10) */
+    intentByQuery?: { query: string; answers: Record<string, boolean> }[];
+  };
+  /** Points de chaque critère retenu pour la page, calculés par le moteur (source de la note) */
+  points?: Partial<Record<EditorialCriterion, CriterionPoints>>;
+  /** Requêtes notées (4 au plus, pondérées par leur volume) et leurs mesures : couverture, intention, concurrence */
+  querySet?: import('./scoring/query-set').QuerySetMeasure[];
   /** Citabilité par les moteurs de réponse IA, jugée dans la même requête que l'analyse éditoriale (GEO, 40 pts) */
   citability?: {
     score: number; // 0 - 40
@@ -274,6 +324,20 @@ export interface EditorialEvaluation {
   /** Rôle jugé par l'IA (corrige la détection automatique si le contenu montre clairement autre chose) */
   role?: PageRole;
   roleReason?: string;
+  /** Objectif sous lequel l'IA a jugé la page (couverture du sujet ou preuves) ; absent : analyse antérieure, jugée comme « cover » */
+  goal?: PageGoal;
+}
+
+/** Critères de la note éditoriale */
+export type EditorialCriterion = 'intent' | 'cannibal' | 'hotZones' | 'opening' | 'goal' | 'eeat' | 'quality' | 'readability';
+
+export interface CriterionPoints {
+  earned: number;
+  max: number;
+  /** measured : calculé par le code ; checklist : cases cochées par l'IA ; ai : note de l'IA ; legacy : ancien palier converti */
+  basis: 'measured' | 'checklist' | 'ai' | 'legacy';
+  passed?: string[];
+  failed?: string[];
 }
 
 export type SearchIntent = 'INFORMATIONAL' | 'TRANSACTIONAL' | 'COMMERCIAL' | 'NAVIGATIONAL';
@@ -298,9 +362,13 @@ export interface QueryProposalInput {
   excerpt: string;
   /** Autres pages piliers : chacune vise son propre sujet, une requête qui leur correspond mieux n'est pas proposée */
   siblingPages: { url: string; title?: string; h1?: string }[];
+  /** Zones ciblées (« Dreux », « Eure-et-Loir », « Occitanie ») : à utiliser dans le texte de certaines recherches */
+  zones?: string[];
 }
 
 export interface SearchInsights {
+  /** Problématique de la page en une phrase (le besoin de l'internaute), tirée par l'IA avec les mots-clés de départ */
+  problem?: string;
   targetQuery: {
     query: string;
     intent: SearchIntent;
@@ -327,6 +395,13 @@ export interface SearchInsights {
   autocomplete: {
     suggestions: string[];
     source: 'GOOGLE_AUTOCOMPLETE' | 'UNAVAILABLE';
+    /**
+     * FOUND : suggestions trouvées ; NONE : Google n'en propose aucune qui reprenne la requête (ni ses variantes
+     * plus courtes) ; UNAVAILABLE : service injoignable ; NOT_REQUESTED : page de marque, contact ou utilitaire
+     */
+    status?: 'FOUND' | 'NONE' | 'UNAVAILABLE' | 'NOT_REQUESTED';
+    /** Graine qui a donné les suggestions (la requête, ou une variante plus courte) */
+    seed?: string;
   };
   snippet: {
     /** 0 - 100 : attractivité du Title et de la méta description pour le CTR */
@@ -365,6 +440,8 @@ export interface EditorialAnalysisInput {
   url: string;
   domain: string;
   role: PageRole;
+  /** Objectif de la page (voir `PageGoal`) : décide ce que « couverture » veut dire pour cette page */
+  goal: PageGoal;
   title?: string;
   metaDescription?: string;
   h1?: string;
@@ -387,6 +464,8 @@ export interface EditorialAnalysisInput {
   fixedQuery?: string;
   /** Requête choisie parmi les candidates de cette analyse : l'IA la garde comme cible */
   chosenQuery?: string;
+  /** Requêtes notées : l'IA remplit la grille d'intention pour chacune */
+  queries?: string[];
   /** Identifiant unique sans effet sur l'analyse : rend chaque appel différent pour contourner tout cache (variabilité) */
   nonce?: string;
 }
@@ -486,6 +565,23 @@ export interface SiteCoherenceFinding {
   recommendation: string;
 }
 
+/**
+ * Périmètre d'exploration d'un audit :
+ * - full : tout le site, en suivant les liens depuis l'accueil (avec ou sans sitemap), puis les pages du sitemap
+ *   qu'aucun lien n'atteint ;
+ * - main : pages principales, à 2 clics au plus de l'accueil, archives et listes paginées écartées ;
+ * - sitemaps : seulement les pages des sitemaps choisis (et l'accueil).
+ */
+export interface CrawlScope {
+  mode: 'full' | 'main' | 'sitemaps';
+  /** Adresses des sitemaps choisis (mode sitemaps) */
+  sitemaps?: string[];
+  /** Pages explorées au plus */
+  maxPages: number;
+  /** Profondeur maximale suivie, en clics depuis l'accueil */
+  maxDepth: number;
+}
+
 /** Lien vers le site retrouvé en lisant une page du domaine référent */
 export interface VerifiedBacklink {
   sourceUrl: string;
@@ -557,6 +653,8 @@ export interface SerpCompetitorPage {
 export interface SerpHistoryEntry {
   date: string;
   query: string;
+  /** Zone d'où la recherche a été simulée (identifiant GeoZone) ; absente : sans lieu simulé */
+  zone?: string;
   /** Fournisseur du relevé (browser, serper) : deux fournisseurs ne mesurent pas dans les mêmes conditions */
   provider?: string;
   pagePosition: number | null;
@@ -570,12 +668,22 @@ export interface SerpFeatures {
   localPack: boolean;
   /** Questions du bloc « Autres questions posées » */
   peopleAlsoAsk: string[];
+  /** Établissements du pack local (nom, site web), 5 au plus ; repérage fragile dans la page Google */
+  localPackEntries?: { name: string; website?: string }[];
 }
 
 export interface SerpAnalysis {
-  status: 'RUNNING' | 'DONE' | 'BLOCKED' | 'ERROR';
+  /** PENDING : pas encore mesurée (budget de recherches atteint ou captcha), à reprendre */
+  status: 'RUNNING' | 'DONE' | 'BLOCKED' | 'ERROR' | 'PENDING';
   /** Pack local et questions : relevés sur la première page de résultats */
   features?: SerpFeatures;
+  /**
+   * Place du site dans le pack local : 1 à 5 ; null : pack affiché sans le site ; absent : pas de pack ou fiches
+   * non lues (le repérage dans la page Google est fragile)
+   */
+  localPackRank?: number | null;
+  /** Zone d'où la recherche a été simulée : identifiant, libellé (« Eure-et-Loir (28) ») et ville simulée */
+  zone?: { id: string; label: string; city: string };
   /** Nombre de résultats organiques lus (profondeur du relevé) */
   depth?: number;
   /** Fournisseur du relevé : browser (Chrome local) ou serper (API) ; absent = browser */
@@ -583,7 +691,10 @@ export interface SerpAnalysis {
   /** Re-test fait car la position s'écartait de plus de 3 rangs du relevé précédent : rangs de la 1re mesure et d'avant */
   retest?: { firstRank: number | null; previousRank: number | null };
   message?: string;
+  /** Requête mesurée, sans lieu (requête visée ou recherche proposée) */
   query: string;
+  /** Texte envoyé à Google : la requête suivie du nom de la zone ciblée (« agence web oise ») ; absent : `query` */
+  sentQuery?: string;
   fetchedAt?: string;
   results: SerpResult[];
   /** Meilleure position du domaine ; null : absent des résultats récupérés */

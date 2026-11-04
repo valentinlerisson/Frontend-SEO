@@ -37,6 +37,8 @@ export function AuditProvider({
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const hasLoadedOnce = useRef(false)
+  // Tâche en cours côté serveur (exploration, analyse IA) : suivi automatique, même quand les résultats restent affichés
+  const [running, setRunning] = useState(false)
 
   const fetchAuditData = useCallback(async () => {
     try {
@@ -76,7 +78,10 @@ export function AuditProvider({
 
       setAudit(data.audit)
       setError(null)
-      setState(IN_PROGRESS_STATUSES.includes(data.status) ? 'LOADING' : 'SUCCESS')
+      const inProgress = IN_PROGRESS_STATUSES.includes(data.status)
+      setRunning(inProgress)
+      // Ré-analyse d'un audit déjà terminé : les résultats restent consultables pendant qu'elle tourne
+      setState(inProgress && data.audit.isLocked ? 'LOADING' : 'SUCCESS')
     } catch (err: any) {
       console.error('Erreur chargement audit API', err)
       setAudit(null)
@@ -92,10 +97,10 @@ export function AuditProvider({
 
   // Polling tant que le crawl/l'analyse est en cours
   useEffect(() => {
-    if (state !== 'LOADING' || !hasLoadedOnce.current) return
+    if ((state !== 'LOADING' && !running) || !hasLoadedOnce.current) return
     const timer = setInterval(fetchAuditData, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [state, fetchAuditData])
+  }, [state, running, fetchAuditData])
 
   const savePillars = async (
     pillarIds: string[],

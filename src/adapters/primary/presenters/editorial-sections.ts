@@ -1,10 +1,12 @@
 import { peopleAlsoAsk } from '@/lib/serp-labels';
 import type { EditorialAccordion, InspectionData, InspectionItemData } from '@/lib/audit-data';
-import type { EditorialEvaluation, EditorialSignals, PageRole, SearchIntent, SerpAnalysis } from '@/core/domain/types';
+import type { CriterionPoints, EditorialCriterion, EditorialEvaluation, EditorialSignals, PageGoal, PageRole, SearchIntent, SerpAnalysis } from '@/core/domain/types';
 import { ROLE_LABEL } from '@/core/domain/scoring/page-role';
+import { GOAL_CRITERION, GOAL_LABEL, judgesProof } from '@/core/domain/scoring/page-goal';
+import { queryJudged } from '@/core/domain/scoring/editorial-checks';
 import { describePagePosition } from '@/lib/serp-labels';
 import { detectSerpIntent } from '@/core/domain/scoring/serp-analysis';
-import { filterRelevantSuggestions, normalizeText } from '@/core/domain/scoring/autocomplete-relevance';
+import { filterRelevantSuggestions, isSameQuery, normalizeText } from '@/core/domain/scoring/autocomplete-relevance';
 import { detectIntentFromSuggestions } from '@/core/domain/scoring/intent-evidence';
 
 /**
@@ -14,9 +16,14 @@ import { detectIntentFromSuggestions } from '@/core/domain/scoring/intent-eviden
 function relevantSearches(editorial: EditorialEvaluation) {
   const search = editorial.search;
   if (!search) return { suggestions: [] as string[], evidence: undefined };
-  const kept = filterRelevantSuggestions(search.targetQuery.query, search.autocomplete.suggestions);
-  if (kept.length < 3) return { suggestions: [] as string[], evidence: undefined };
-  return { suggestions: kept, evidence: detectIntentFromSuggestions(kept) };
+  // Filtrées sur la graine qui les a données (la requête, ou une variante plus courte) ; une intention n'est tirée
+  // qu'à partir de 3 suggestions
+  const seed = search.autocomplete.seed ?? search.targetQuery.query;
+  const kept = filterRelevantSuggestions(seed, search.autocomplete.suggestions);
+  // Intention tirée seulement d'une graine proche de la requête (un mot d'écart au plus) : une variante trop courte
+  // fait remonter des recherches voisines (« accompagnement des familles en soins palliatifs »)
+  const close = isSameQuery(seed, search.targetQuery.query) || isSameQuery(search.targetQuery.query, seed);
+  return { suggestions: kept, evidence: kept.length >= 3 && close ? detectIntentFromSuggestions(kept) : undefined };
 }
 import {
   freshnessAccordion,
@@ -43,6 +50,10 @@ const NO_GAP_ROLES: PageRole[] = ['contact', 'brand', 'utility'];
 type Input = {
   editorial: EditorialEvaluation;
   role: PageRole;
+  /** Objectif de la page : décide si la couverture du sujet est jugée, et ce que ses pistes proposent */
+  goal: PageGoal;
+  /** L'analyse de l'IA a été faite sous un autre objectif : ses pistes ne correspondent plus */
+  goalStale?: boolean;
   serp?: SerpAnalysis;
   signals?: EditorialSignals;
   page: { title?: string | null; metaDescription?: string | null; wordCount: number };
@@ -69,6 +80,35 @@ function scored(
     group: 'scored',
     items,
   };
+}
+
+/**
+ * Points d'un critère : ceux calculés par le moteur ; pour une analyse enregistrée avant le barème actuel, l'ancienne
+ * note convertie (même règle que le moteur).
+ */
+function pointsOf(
+  editorial: EditorialEvaluation,
+  key: EditorialCriterion,
+  legacyScore: number,
+  legacyMax: number,
+  max: number
+): CriterionPoints {
+  return (
+    editorial.points?.[key] ?? {
+      earned: Math.round((Math.max(0, Math.min(legacyMax, legacyScore)) * max) / legacyMax),
+      max,
+      basis: 'legacy',
+    }
+  )
+}
+
+/** Cases de la grille : cochées en vert, non cochées en bleu (jugement de l'IA, pas une erreur mesurée) */
+function checkItems(points: CriterionPoints): InspectionItemData[] {
+  if (points.basis !== 'checklist') return []
+  return [
+    ...(points.passed ?? []).map((label) => ({ text: label, status: 'valid' as const, source: 'ai' as const })),
+    ...(points.failed ?? []).map((label) => ({ text: `${label} : non`, status: 'info' as const, source: 'ai' as const })),
+  ]
 }
 
 /** Critère noté mais exclu du score : la requête cible n'est pas confirmée dans Google */
@@ -164,19 +204,24 @@ export function positionSummary(editorial: EditorialEvaluation, role: PageRole, 
       measuredOn,
     };
   }
-  return { badge: position.badge, detail: position.detail, status: position.rank === null ? 'warning' : 'valid', measuredOn };
+  return { badge: position.badge, detail: position.detail, status: position.rank === null ? 'info' : 'valid', measuredOn };
 }
 
 /**
  * Blocs détaillés de l'onglet SEO éditorial, dans un ordre fixe (lib/issue-routing.ts y renvoie par indice) :
  * 0-5 critères notés, 6 ce que montre Google, 7-12 diagnostics hors score.
  */
-export function buildEditorialSections({ editorial, role, serp, signals, page }: Input): EditorialAccordion[] {
+export function buildEditorialSections({ editorial, role, goal, goalStale, serp, signals, page }: Input): EditorialAccordion[] {
   const search = editorial.search;
   const brand = isBrandQuery(editorial, role);
-  const gapsApplicable = !NO_GAP_ROLES.includes(role);
+  // Sections attendues (estimées par l'IA) : seulement pour une page qui doit couvrir son sujet
+  const gapsApplicable = !NO_GAP_ROLES.includes(role) && goal === 'cover';
+  // Sections lues chez les concurrents (mesurées) : sauf page de marque, contact, utilitaire ou directe
+  const competitorGapsApplicable = !NO_GAP_ROLES.includes(role) && goal !== 'direct';
   const query = search?.targetQuery.query;
   const isArticle = role === 'article';
+  // Contenu qui répond à une question : article ou contenu informatif (guide, FAQ)
+  const answersQuestion = isArticle || role === 'informational';
 
   // 0. Intention
   const summary = intentSummary(editorial, role, serp);
@@ -264,16 +309,31 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
   // 4. Couverture du sujet
   const semantic = editorial.semanticDepth;
   const semanticItems: InspectionItemData[] = [];
+  // Objectif de preuve, d'action, de confiance ou de récit : les 20 pts ne jugent pas la couverture d'un sujet
+  const criterion = judgesProof(goal) ? GOAL_CRITERION[goal] : undefined;
   if (semantic.recognizedEntities.length > 0) {
     semanticItems.push({
-      text: `${semantic.recognizedEntities.length} notion(s) du sujet bien traitée(s)`,
+      text: criterion
+        ? `${semantic.recognizedEntities.length} ${criterion.presentLabel}`
+        : `${semantic.recognizedEntities.length} notion(s) du sujet bien traitée(s)`,
       status: 'valid',
       source: 'ai',
       details: semantic.recognizedEntities.map((entity) => ({ label: entity, status: 'valid' as const })),
     });
   }
-  const missingNotions = Array.from(new Set([...semantic.missingKeyEntities, ...(search?.contentGaps.missingEntities ?? [])]));
-  if (gapsApplicable) {
+  const missingNotions = Array.from(new Set([...semantic.missingKeyEntities, ...(gapsApplicable ? search?.contentGaps.missingEntities ?? [] : [])]));
+  // Page qui présente : des pistes pour convaincre ; page qui couvre son sujet : notions et sections à envisager
+  if (criterion && !goalStale) {
+    for (const idea of missingNotions.slice(0, 4)) {
+      semanticItems.push({ text: `${criterion.ideaLabel} : ${idea}`, status: 'info', source: 'ai' });
+    }
+  }
+  if (goalStale) {
+    semanticItems.push({
+      text: `L’IA a jugé cette page sous un autre objectif que « ${GOAL_LABEL[goal]} » : relancez l’analyse de la page pour obtenir des pistes adaptées.`,
+      status: 'info',
+    });
+  } else if (gapsApplicable) {
     for (const notion of missingNotions.slice(0, 5)) {
       semanticItems.push({ text: `Notion à envisager : ${notion}`, status: 'info', source: 'ai' });
     }
@@ -285,53 +345,122 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
     }
   }
   if (semanticItems.length === 0) {
-    semanticItems.push({ text: 'Aucun manque notable repéré', status: 'valid', source: 'ai' });
+    semanticItems.push({
+      text: criterion ? criterion.nothing : 'Aucun manque notable repéré',
+      status: 'valid',
+      source: 'ai',
+    });
   }
 
   // 5. E-E-A-T (articles seulement)
   const eeat = editorial.eeatSignals;
 
-  const queryInferred = search?.targetQuery.confidence === 'INFERRED';
+  // Requêtes notées : exclues seulement si aucune n'est une vraie recherche (volume, suggestion Google, saisie)
+  const querySet = editorial.querySet ?? [];
+  const queryInferred = querySet.length > 0 ? false : !queryJudged(search);
   const maybeExcluded = (block: EditorialAccordion) => (queryInferred ? excluded(block) : block);
+  // Barème : intention 15, cannibalisation 10, zones chaudes 15, début de page 10, objectif 20, E-E-A-T 10
+  const intentPoints = pointsOf(editorial, 'intent', editorial.intentMatch.score, 20, 15);
+  const cannibalPoints = pointsOf(editorial, 'cannibal', cannibal.score, 20, 10);
+  const openingPoints = pointsOf(editorial, 'opening', tldr.score, 15, 10);
+  const goalPoints = pointsOf(editorial, 'goal', semantic.score, 20, 20);
+  const eeatPoints = pointsOf(editorial, 'eeat', eeat.score, 10, 10);
+  const coveragePoints = pointsOf(editorial, 'hotZones', hot.score, 15, 15);
+  // Une ligne par requête notée : son poids, puis la mesure ; sans groupe (analyse antérieure), zones de la requête cible
+  const share = (entry: (typeof querySet)[number]) =>
+    `${Math.round(entry.weight * 100)} %${entry.volume !== undefined ? `, ${entry.volume.toLocaleString('fr-FR')}/mois` : ''}`
+  const zoneItems: InspectionItemData[] =
+    querySet.length > 0
+      ? querySet.map((entry) => ({
+          text: `« ${entry.query} » (${share(entry)}) : ${entry.coverage.score}/15${
+            entry.coverage.missing.length > 0 ? `, manque dans : ${entry.coverage.missing.join(', ')}` : ', présente partout'
+          }`,
+          status: entry.coverage.score >= 12 ? ('valid' as const) : ('warning' as const),
+          source: 'measured' as const,
+        }))
+      : zones.map((zone) => ({
+          text: `Requête dans ${zone.label} (${zone.points} pts)`,
+          status: zone.present ? ('valid' as const) : ('error' as const),
+          source: 'measured' as const,
+        }))
+  const intentQueryItems: InspectionItemData[] =
+    querySet.length > 1 || (querySet.length === 1 && intentPoints.basis !== 'checklist')
+      ? querySet.map((entry) => ({
+          text:
+            entry.intent === null
+              ? `« ${entry.query} » (${share(entry)}) : intention pas encore jugée, ré-analysez la page`
+              : `« ${entry.query} » (${share(entry)}) : ${entry.intent}/15${
+                  entry.intentFailed?.length ? `, non : ${entry.intentFailed.join(', ').toLowerCase()}` : ''
+                }`,
+          status: entry.intent === null ? ('info' as const) : entry.intent >= 12 ? ('valid' as const) : ('info' as const),
+          source: 'ai' as const,
+        }))
+      : []
+  const cannibalQueryItems: InspectionItemData[] = querySet
+    .filter((entry) => entry.cannibal !== null)
+    .map((entry) => ({
+      text: `« ${entry.query} » (${share(entry)}) : ${
+        entry.cannibal === 20 ? 'seule cette page du site sort' : entry.cannibal === 5 ? 'trois pages du site ou plus sortent' : 'une autre page du site sort aussi ou à sa place'
+      } (mesure Google)`,
+      status: entry.cannibal === 20 ? ('valid' as const) : ('warning' as const),
+      source: 'google' as const,
+    }))
+  const coverageVerdict =
+    querySet.length > 1
+      ? `Note moyenne des ${querySet.length} requêtes notées, pondérée par leur volume : chacune est cherchée dans le Title (6 pts), le début du texte (5 pts) et les sous-titres (4 pts).`
+      : hotVerdict
+  const goalGood = goalPoints.earned >= goalPoints.max * 0.75;
   const scoredBlocks: EditorialAccordion[] = [
-    maybeExcluded(scored('Intention de recherche', editorial.intentMatch.score, 20, editorial.intentMatch.critique, editorial.intentMatch.actionableAdvice, intentItems)),
-    scored('Cannibalisation', cannibal.score, 20, cannibal.critique, cannibal.actionableAdvice, cannibalItems),
+    maybeExcluded(scored(querySet.length > 1 ? 'Réponse aux recherches notées' : 'Réponse à la recherche visée', intentPoints.earned, intentPoints.max, editorial.intentMatch.critique, editorial.intentMatch.actionableAdvice, [...checkItems(intentPoints), ...intentQueryItems, ...intentItems])),
+    scored('Concurrence entre vos pages', cannibalPoints.earned, cannibalPoints.max, cannibal.critique, cannibal.actionableAdvice, [...cannibalQueryItems, ...cannibalItems]),
     maybeExcluded(scored(
-      'Requête dans les zones chaudes',
-      hot.score,
-      15,
-      hotVerdict,
+      'Couverture des recherches',
+      coveragePoints.earned,
+      coveragePoints.max,
+      coverageVerdict,
       hot.actionableAdvice,
-      zones.map((zone) => ({
-        text: `Requête dans ${zone.label} (${zone.points} pts)`,
-        status: zone.present ? ('valid' as const) : ('error' as const),
-        source: 'ai' as const,
-      }))
+      zoneItems
     )),
-    scored(isArticle ? 'Réponse directe' : 'Proposition de valeur', tldr.score, 15, tldr.critique, tldr.actionableAdvice, [
-      { text: tldrLabel, status: tldr.hasDirectAnswer ? 'valid' : 'warning', source: 'ai' },
+    scored(answersQuestion ? 'Réponse directe' : 'Proposition de valeur', openingPoints.earned, openingPoints.max, tldr.critique, tldr.actionableAdvice, [
+      ...(openingPoints.basis === 'checklist'
+        ? checkItems(openingPoints)
+        : [{ text: tldrLabel, status: tldr.hasDirectAnswer ? ('valid' as const) : ('warning' as const), source: 'ai' as const }]),
       {
         text: `${page.wordCount} mots sur la page (repère : Google n’impose pas de longueur minimale)`,
         status: 'info',
         source: 'measured',
       },
     ]),
-    scored(
-      'Couverture du sujet',
-      semantic.score,
-      20,
-      semantic.score >= 15
-        ? 'Le sujet est traité de façon complète pour une page de ce type.'
-        : 'Le sujet est traité en partie : des notions attendues par l’internaute manquent.',
-      semantic.actionableAdvice,
-      semanticItems
-    ),
+    goal === 'direct'
+      ? {
+          // Page volontairement directe : la couverture du sujet n'est pas jugée
+          title: 'Couverture du sujet',
+          scoreText: 'Sans objet',
+          aiReasoning: 'Cette page va droit au but : le sujet n’a pas à être couvert en détail. Seuls la promesse et l’action possible sont jugés.',
+          verdict: 'Objectif « aller droit au but » : ces 20 points sortent de la note, qui est calculée sur les autres critères.',
+          group: 'scored',
+          items: [{ text: 'Page volontairement directe : aucune notion ni section à ajouter', status: 'info' }],
+        }
+      : scored(
+          criterion ? criterion.title : 'Couverture du sujet',
+          goalPoints.earned,
+          goalPoints.max,
+          criterion
+            ? goalGood
+              ? criterion.good
+              : criterion.weak
+            : goalGood
+              ? 'Le sujet est traité de façon complète pour une page de ce type.'
+              : 'Le sujet est traité en partie : des notions attendues par l’internaute manquent.',
+          goalStale ? undefined : semantic.actionableAdvice,
+          [...checkItems(goalPoints), ...semanticItems]
+        ),
     isArticle
       ? scored(
-          'Auteur, date et sources (E-E-A-T)',
-          eeat.score,
-          10,
-          eeat.score >= 8 ? 'L’article est signé, daté et sourcé.' : 'Il manque des éléments qui montrent qui écrit et sur quelles sources.',
+          'Auteur, date et sources',
+          eeatPoints.earned,
+          eeatPoints.max,
+          eeatPoints.earned >= 8 ? 'L’article est signé, daté et sourcé.' : 'Il manque des éléments qui montrent qui écrit et sur quelles sources.',
           `${eeat.actionableAdvice} Le balisage Schema.org correspondant est proposé dans l’onglet GEO.`,
           [
             { text: 'Auteur identifié', status: eeat.hasAuthor ? 'valid' : 'error', source: 'measured' },
@@ -339,14 +468,30 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
             { text: 'Sources citées', status: eeat.hasSources ? 'valid' : 'warning', source: 'ai' },
           ]
         )
-      : {
-          title: 'Auteur, date et sources (E-E-A-T)',
-          scoreText: 'Sans objet',
-          aiReasoning: `Sans objet pour une page « ${ROLE_LABEL[role]} » : critère exclu du score.`,
-          items: [],
-          group: 'scored',
-          hidden: true,
-        },
+      : role === 'informational'
+        ? {
+            // Contenu informatif : auteur et date ne sont pas exigés ; conseil hors score
+            title: 'Auteur, date et sources (hors score)',
+            scoreText: 'Hors score',
+            aiReasoning:
+              'Un guide ou une FAQ n’a pas à être signé ni daté pour être utile. Une date de mise à jour rassure toutefois si le contenu évolue (réglementation, tarifs), et citer des sources fiables renforce la confiance.',
+            verdict:
+              'Sans effet sur la note : une date de mise à jour et des sources sont un plus si le sujet évolue.',
+            items: [
+              { text: 'Auteur identifié', status: eeat.hasAuthor ? 'valid' : 'info', source: 'measured' },
+              { text: 'Date de publication ou de mise à jour visible', status: eeat.hasPublicationDate ? 'valid' : 'info', source: 'measured' },
+              { text: 'Sources citées', status: eeat.hasSources ? 'valid' : 'info', source: 'ai' },
+            ],
+            group: 'diagnostic',
+          }
+        : {
+            title: 'Auteur, date et sources',
+            scoreText: 'Sans objet',
+            aiReasoning: `Sans objet pour une page « ${ROLE_LABEL[role]} » : critère exclu du score.`,
+            items: [],
+            group: 'scored',
+            hidden: true,
+          },
   ];
 
   // 6. Ce que montre Google
@@ -363,7 +508,7 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
       status: position.status,
       source: 'google',
     });
-    if (gapsApplicable && !brand) {
+    if (competitorGapsApplicable && !brand) {
       for (const section of serp.gaps.missingSections.slice(0, 6)) {
         googleItems.push({ text: `Section traitée par les concurrents, absente ici : ${section}`, status: 'warning', source: 'google' });
       }
@@ -394,9 +539,26 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
       });
     }
   }
-  if (!brand && suggestions.length >= 3) {
+  if (!brand && suggestions.length === 0 && search) {
+    const status = search.autocomplete.status;
     googleItems.push({
-      text: `${suggestions.length} recherches suggérées par Google autour de la requête`,
+      text:
+        status === 'NONE'
+          ? `Google ne suggère aucune recherche qui reprenne « ${search.targetQuery.query} », ni ses variantes plus courtes : la recherche est sans doute peu tapée telle quelle.`
+          : status === 'UNAVAILABLE'
+            ? 'Le service de suggestions de Google n’a pas répondu pendant l’analyse : relancez l’analyse plus tard pour les obtenir.'
+            : status === 'NOT_REQUESTED'
+              ? 'Suggestions non demandées pour ce type de page (marque, contact ou utilitaire).'
+              : 'Suggestions Google non relevées pour cette analyse : relancez l’analyse pour les obtenir.',
+      status: 'info',
+      source: 'google',
+    });
+  }
+  if (!brand && suggestions.length > 0) {
+    const seed = search?.autocomplete.seed
+    const shorter = seed && search && normalizeText(seed) !== normalizeText(search.targetQuery.query)
+    googleItems.push({
+      text: `${suggestions.length} recherche(s) suggérée(s) par Google${shorter ? ` à partir de « ${seed} » (variante plus courte de la requête)` : ' autour de la requête'}`,
       status: 'info',
       source: 'google',
       details: suggestions.map((suggestion) => ({ label: suggestion, status: 'valid' as const })),
@@ -412,7 +574,7 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
   }
   const googleBlock: EditorialAccordion = {
     title: 'Ce que montre Google',
-    scoreText: position ? position.badge : suggestions.length >= 3 && !brand ? `${suggestions.length} recherches` : 'Non mesuré',
+    scoreText: position ? position.badge : suggestions.length > 0 && !brand ? `${suggestions.length} recherche(s)` : 'Non mesuré',
     aiReasoning: serp
       ? `Résultats Google réels lus pour la requête cible (${serp.depth ?? serp.results.length} premiers résultats organiques) : position, sections des pages concurrentes, pack local, questions, recherches suggérées.`
       : 'Recherches suggérées par Google Autocomplete. Les positions et sections concurrentes demandent l’analyse de l’onglet Positionnement.',
@@ -420,7 +582,7 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
       ? 'Résultats Google réels lus pour la requête cible.'
       : 'Sans mesure de la SERP : seules les recherches suggérées sont disponibles.',
     action:
-      serp && gapsApplicable && !brand && serp.gaps.missingSections.length > 0
+      serp && competitorGapsApplicable && !brand && serp.gaps.missingSections.length > 0
         ? 'Ajouter les sections absentes qui servent l’internaute, sans copier les concurrents.'
         : undefined,
     group: 'google',
@@ -499,17 +661,98 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
   for (const block of measured) {
     block.items = block.items.map((item) => ({ ...item, source: item.source ?? 'measured' }));
   }
+  // Lisibilité mesurée : critère noté (5 pts au plus) dès que la mesure est fiable
+  const read = editorial.readabilityPoints;
+  if (signals && read && read.max > 0) {
+    const block = measured[1];
+    measured[1] = {
+      ...block,
+      title: 'Lisibilité',
+      group: 'scored',
+      scoreText: `${read.score}/${read.max} pts`,
+      points: { earned: read.score, max: read.max },
+      verdict:
+        read.score >= read.max
+          ? 'Paragraphes et phrases courts : la page se lit facilement.'
+          : 'Des paragraphes ou des phrases longs ralentissent la lecture.',
+      action: read.score < read.max ? 'Découper les paragraphes longs et ajouter des listes là où le contenu s’y prête.' : undefined,
+    };
+  }
 
-  // 12. Expérience vécue et originalité (hors score)
+  // 12. Qualité du contenu : notée sur les extraits vérifiés (15 pts) ; sinon diagnostic d'une analyse antérieure
   const qualityTitle = 'Expérience vécue et originalité (hors score)';
+  const measuredQuality = editorial.contentQuality;
+  const quote = (value?: string) => (value ? [{ label: `« ${value} »`, tag: 'Extrait vérifié', status: 'valid' as const }] : undefined);
   const qualityBlock: EditorialAccordion =
-    role === 'contact' || role === 'utility'
+    role === 'contact' || role === 'utility' || goal === 'direct'
       ? { title: qualityTitle, scoreText: 'Sans objet', aiReasoning: '', items: [], group: 'diagnostic', hidden: true }
+      : measuredQuality && editorial.quality
+        ? scored(
+            'Qualité du contenu',
+            measuredQuality.score,
+            measuredQuality.max,
+            measuredQuality.score >= 11
+              ? 'Le contenu s’appuie sur du vécu, des données ou des cas propres au site.'
+              : 'Le contenu pourrait s’appuyer davantage sur du vécu, des données ou des cas propres au site.',
+            [editorial.quality.firstHandExperience.advice, editorial.quality.informationGain.advice].filter(Boolean).join(' '),
+            [
+              {
+                text:
+                  measuredQuality.checks.experience.length > 0
+                    ? `Expérience vécue : ${measuredQuality.checks.experience.length} extrait(s) retrouvé(s) dans la page (${measuredQuality.checks.experience.length >= 2 ? 5 : 3}/5 pts)`
+                    : 'Expérience vécue : aucun extrait retrouvé dans la page (0/5 pt)',
+                status: measuredQuality.checks.experience.length > 0 ? 'valid' : 'info',
+                source: 'ai',
+                details: measuredQuality.checks.experience.map((value) => ({ label: `« ${value} »`, tag: 'Extrait vérifié', status: 'valid' as const })),
+              },
+              {
+                text: measuredQuality.checks.originalData ? 'Donnée ou méthode propre au site (4/4 pts)' : 'Aucune donnée ni méthode propre repérée (0/4 pt)',
+                status: measuredQuality.checks.originalData ? 'valid' : 'info',
+                source: 'ai',
+                details: quote(measuredQuality.checks.originalData),
+              },
+              {
+                text: measuredQuality.checks.concreteCase ? 'Cas concret décrit (4/4 pts)' : 'Aucun cas concret repéré (0/4 pt)',
+                status: measuredQuality.checks.concreteCase ? 'valid' : 'info',
+                source: 'ai',
+                details: quote(measuredQuality.checks.concreteCase),
+              },
+              {
+                text: measuredQuality.checks.limits ? 'Limite ou contrainte reconnue (2/2 pts)' : 'Aucune limite ni contrainte évoquée (0/2 pt)',
+                status: measuredQuality.checks.limits ? 'valid' : 'info',
+                source: 'ai',
+                details: quote(measuredQuality.checks.limits),
+              },
+              ...(editorial.quality.informationGain.genericFluff.length > 0
+                ? [
+                    {
+                      text: `${editorial.quality.informationGain.genericFluff.length} passage(s) générique(s) repéré(s) (sans effet sur la note)`,
+                      status: 'info' as const,
+                      source: 'ai' as const,
+                      details: editorial.quality.informationGain.genericFluff.map((passage) => ({ label: `« ${passage} »`, tag: 'Générique' })),
+                    },
+                  ]
+                : []),
+            ]
+          )
       : editorial.quality
         ? diagnostic(
             {
               ...qualityAccordion(editorial.quality, role),
-              items: qualityAccordion(editorial.quality, role).items.map((item) => ({ ...item, source: 'ai' as const })),
+              items: [
+                ...qualityAccordion(editorial.quality, role).items.map((item) => ({ ...item, source: 'ai' as const })),
+                // Objectif « couvrir le sujet » analysé avant la note : à relancer ; autres objectifs : les preuves sont
+                // déjà jugées par le critère de l'objectif, ce bloc reste un conseil
+                goal === 'cover'
+                  ? {
+                      text: 'Analyse antérieure à la note « Qualité du contenu » : relancez l’analyse de la page pour l’inclure dans la note.',
+                      status: 'info' as const,
+                    }
+                  : {
+                      text: `Hors score pour l’objectif « ${GOAL_LABEL[goal]} » : les preuves sont déjà jugées dans « ${judgesProof(goal) ? GOAL_CRITERION[goal].title : 'Couverture du sujet'} ».`,
+                      status: 'info' as const,
+                    },
+              ],
             },
             qualityTitle,
             [editorial.quality.firstHandExperience.advice, editorial.quality.informationGain.advice].filter(Boolean).join(' ')
@@ -522,16 +765,24 @@ export function buildEditorialSections({ editorial, role, serp, signals, page }:
   return [...scoredBlocks, googleBlock, snippetBlock, localBlock, ...measured, qualityBlock];
 }
 
-/** Barres de score : uniquement les critères notés */
-export function editorialCategories(editorial: EditorialEvaluation, role: PageRole) {
-  const percent = (score: number, max: number) => Math.min(100, Math.max(0, Math.round((score / max) * 100)));
-  const queryConfirmed = editorial.search?.targetQuery.confidence !== 'INFERRED';
-  return [
-    ...(queryConfirmed ? [{ name: 'Intention', score: percent(editorial.intentMatch.score, 20) }] : []),
-    { name: 'Cannibalisation', score: percent(editorial.cannibalizationRisk.score, 20) },
-    ...(queryConfirmed ? [{ name: 'Zones chaudes', score: percent(editorial.hotZonesOptimization.score, 15) }] : []),
-    { name: role === 'article' ? 'Réponse directe' : 'Proposition de valeur', score: percent(editorial.primaryContentTldr.score, 15) },
-    { name: 'Couverture du sujet', score: percent(editorial.semanticDepth.score, 20) },
-    ...(role === 'article' ? [{ name: 'E-E-A-T', score: percent(editorial.eeatSignals.score, 10) }] : []),
-  ];
+/** Barres de score : uniquement les critères retenus pour la page, en pourcentage de leurs points */
+export function editorialCategories(editorial: EditorialEvaluation, role: PageRole, goal: PageGoal) {
+  const percent = (item: CriterionPoints) => Math.min(100, Math.max(0, Math.round((item.earned / item.max) * 100)));
+  const queryConfirmed = queryJudged(editorial.search);
+  const opening = role === 'article' || role === 'informational' ? 'Réponse directe' : 'Proposition de valeur';
+  const bars: { name: string; score: number }[] = [];
+  if (queryConfirmed) bars.push({ name: 'Intention', score: percent(pointsOf(editorial, 'intent', editorial.intentMatch.score, 20, 15)) });
+  bars.push({ name: 'Cannibalisation', score: percent(pointsOf(editorial, 'cannibal', editorial.cannibalizationRisk.score, 20, 10)) });
+  if (queryConfirmed) bars.push({ name: 'Couverture des recherches', score: percent(pointsOf(editorial, 'hotZones', editorial.hotZonesOptimization.score, 15, 15)) });
+  bars.push({ name: opening, score: percent(pointsOf(editorial, 'opening', editorial.primaryContentTldr.score, 15, 10)) });
+  if (goal !== 'direct') {
+    bars.push({
+      name: judgesProof(goal) ? GOAL_CRITERION[goal].title : 'Couverture du sujet',
+      score: percent(pointsOf(editorial, 'goal', editorial.semanticDepth.score, 20, 20)),
+    });
+  }
+  if (role === 'article') bars.push({ name: 'E-E-A-T', score: percent(pointsOf(editorial, 'eeat', editorial.eeatSignals.score, 10, 10)) });
+  if (editorial.points?.quality) bars.push({ name: 'Qualité du contenu', score: percent(editorial.points.quality) });
+  if (editorial.points?.readability) bars.push({ name: 'Lisibilité', score: percent(editorial.points.readability) });
+  return bars;
 }

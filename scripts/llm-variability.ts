@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { llmGateway } from '@/adapters/secondary/llm/llm-gateway';
 import { classifyPageRole, resolvePageRole } from '@/core/domain/scoring/page-role';
+import { resolveGoal } from '@/core/domain/scoring/page-goal';
 import { measureHotZones } from '@/core/domain/scoring/hot-zones';
 import type { EditorialEvaluation, PageRole, RoleSignals } from '@/core/domain/types';
 
@@ -85,6 +86,7 @@ async function main() {
             url: page.url,
             domain,
             role,
+            goal: resolveGoal({ role }).goal,
             title: page.title ?? undefined,
             metaDescription: page.metaDescription ?? undefined,
             h1: page.h1 ?? undefined,

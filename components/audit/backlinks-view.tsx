@@ -87,11 +87,12 @@ export function BacklinksView() {
                     : 'domaines dont le lien a été retrouvé',
               },
               {
-                label: 'Depuis l’audit précédent',
-                value: report.changes ? `+${report.changes.added.length} / −${report.changes.lost.length}` : '—',
-                hint: report.changes
-                  ? `domaines gagnés / perdus depuis le ${new Date(report.changes.previousDate).toLocaleDateString('fr-FR')}`
-                  : 'premier relevé du projet',
+                label: 'Pages du site liées',
+                value: summary && summary.targets > 0 ? String(summary.targets) : '—',
+                hint:
+                  summary && summary.targets > 0
+                    ? 'pages qui reçoivent au moins un lien vérifié'
+                    : 'aucun lien retrouvé sur les domaines vérifiés',
               },
             ].map((tile) => (
               <div key={tile.label} className="glass-card glass-lift rounded-2xl border p-5">

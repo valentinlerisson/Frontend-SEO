@@ -1,10 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Plus, RotateCw, X, FileDown, CheckCircle2, Globe, Smartphone, ShieldCheck } from 'lucide-react'
 import { useProjects } from '@/components/providers/projects-provider'
 import { useAudit } from '@/components/providers/audit-provider'
+import { ReportPrintSheet, type ReportMode } from './report-print-sheet'
 
 type AuditHeaderProps = {
   domain?: string
@@ -13,10 +14,12 @@ type AuditHeaderProps = {
 
 export function AuditHeader({ domain, currentTitle }: AuditHeaderProps) {
   const [modalOpen, setModalOpen] = useState(false)
-  const { audit } = useAudit()
+  const { audit, progress } = useAudit()
   const isCrawling = audit?.crawlStats.isCrawling ?? false
   const crawledPages = audit?.crawlStats.crawledPages ?? 0
   const totalPages = audit?.crawlStats.totalPages ?? 0
+  // Ré-analyse IA d'un audit déjà terminé (page stratégique ajoutée, rôle changé) : résultats affichés, avancement ici
+  const analyzing = audit?.status === 'ANALYZING_AI' && !audit.isLocked
 
   return (
     <>
@@ -43,6 +46,13 @@ export function AuditHeader({ domain, currentTitle }: AuditHeaderProps) {
               <span>
                 Crawl en cours ({crawledPages}/{totalPages})
               </span>
+            </div>
+          )}
+
+          {analyzing && (
+            <div className="inline-flex items-center gap-2.5 rounded-full border border-shade-44 bg-shade-2b px-4 py-1.5 text-sm font-medium text-foreground">
+              <RotateCw className="size-4 animate-spin text-primary-ink" strokeWidth={2.5} aria-hidden="true" />
+              Analyse IA en cours ({progress} %)
             </div>
           )}
 
@@ -211,102 +221,129 @@ export function ExportPdfButton({ onClick }: { onClick?: () => void }) {
 
 export function PdfExportModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { audit } = useAudit()
-  const [generating, setGenerating] = useState(false)
-  const [downloaded, setDownloaded] = useState(false)
+  const [mode, setMode] = useState<ReportMode>('client')
+  const [printing, setPrinting] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // Fonction de fermeture lue par les effets sans les relancer à chaque rendu du parent
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
 
-  if (!isOpen) return null
+  // Fenêtre accessible au clavier : focus à l'ouverture, Échap pour fermer
+  useEffect(() => {
+    if (!isOpen) return
+    dialogRef.current?.querySelector<HTMLElement>('input, button')?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen])
 
-  const handleDownload = () => {
-    setGenerating(true)
-    setTimeout(() => {
-      setGenerating(false)
-      setDownloaded(true)
-      setTimeout(() => {
-        setDownloaded(false)
-        onClose()
-      }, 1500)
-    }, 1200)
-  }
+  // Le rapport est monté, puis la fenêtre d'impression s'ouvre ; son titre devient le nom du fichier PDF proposé
+  useEffect(() => {
+    if (!printing || !audit) return
+    const previousTitle = document.title
+    document.title = `Rapport SEO ${audit.domain} ${new Date().toISOString().slice(0, 10)}${mode === 'complete' ? ' complet' : ''}`
+    const timer = window.setTimeout(() => {
+      window.print()
+      document.title = previousTitle
+      setPrinting(false)
+      closeRef.current()
+    }, 50)
+    return () => window.clearTimeout(timer)
+  }, [printing, audit, mode])
+
+  if (!isOpen || !audit) return null
+
+  const options: { value: ReportMode; title: string; text: string }[] = [
+    {
+      value: 'client',
+      title: 'Rapport client',
+      text: 'Notes, résumé, 5 priorités, pages stratégiques, visibilité Google et popularité. Peu de jargon.',
+    },
+    {
+      value: 'complete',
+      title: 'Rapport complet',
+      text: 'Tout le rapport client, plus les étapes de correction, toutes les anomalies et un glossaire.',
+    },
+  ]
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in"
-    >
-      <div className="relative w-full max-w-md glass-panel rounded-2xl border p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-title"
+        className="relative w-full max-w-md glass-panel rounded-2xl border p-6"
+      >
         <button
           type="button"
           onClick={onClose}
+          aria-label="Fermer"
           className="absolute right-4 top-4 rounded-lg p-1 text-muted-foreground hover:bg-shade-33 hover:text-foreground"
         >
           <X className="size-5" />
         </button>
 
-        <div className="flex items-center gap-3 mb-4">
+        <div className="mb-4 flex items-center gap-3">
           <span className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary-ink">
-            <FileDown className="size-5" />
+            <FileDown className="size-5" aria-hidden="true" />
           </span>
           <div>
-            <h3 className="text-xl font-bold text-foreground">Exportation PDF</h3>
-            <p className="text-xs text-muted-foreground">Rapport en marque blanche BigApp SEO</p>
+            <h3 id="export-title" className="text-xl font-bold text-foreground">Exporter le rapport</h3>
+            <p className="text-xs text-muted-foreground">
+              {audit.domain} · {audit.crawlStats.crawledPages} pages · {audit.pillarPages.length} pages stratégiques
+            </p>
           </div>
         </div>
 
-        <p className="text-sm text-foreground mb-4">
-          Générez un rapport exécutif complet prêt à être envoyé à votre client : score global 100% Mobile-First, priorités To-Do, tableau sémantique et recommandations GEO.
+        <fieldset className="mb-4 flex flex-col gap-2">
+          <legend className="mb-2 text-sm font-semibold text-foreground">Version du rapport</legend>
+          {options.map((option) => (
+            <label
+              key={option.value}
+              className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-sm ${
+                mode === option.value ? 'border-primary bg-primary/10' : 'border-shade-3e'
+              }`}
+            >
+              <input
+                type="radio"
+                name="report-mode"
+                value={option.value}
+                checked={mode === option.value}
+                onChange={() => setMode(option.value)}
+                className="mt-1 size-4 accent-[#f5e400]"
+              />
+              <span>
+                <span className="block font-semibold text-foreground">{option.title}</span>
+                <span className="block text-muted-foreground">{option.text}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        <p className="mb-5 rounded-xl border border-shade-3e bg-shade-18 p-3 text-xs text-muted-foreground">
+          Dans la fenêtre qui s’ouvre, choisissez « Enregistrer au format PDF ». Si les couleurs n’apparaissent pas,
+          cochez « Graphiques d’arrière-plan » dans les options.
         </p>
 
-        <div className="rounded-xl border border-shade-3e bg-shade-18 p-3 text-xs text-muted-foreground space-y-1.5 mb-5">
-          <div className="flex justify-between">
-            <span>Domaine audité :</span>
-            <span className="font-semibold text-foreground">{audit?.domain ?? '—'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Pages analysées :</span>
-            <span className="font-semibold text-foreground">
-              {audit ? `${audit.crawlStats.crawledPages} pages (${audit.pillarPages.length} piliers IA)` : '—'}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span>Date de génération :</span>
-            <span className="font-semibold text-foreground">Aujourd'hui</span>
-          </div>
-        </div>
-
         <div className="flex justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-xl px-4 py-2 text-sm text-muted-foreground hover:text-foreground"
-          >
-            Fermer
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm text-muted-foreground hover:text-foreground">
+            Annuler
           </button>
           <button
             type="button"
-            onClick={handleDownload}
-            disabled={generating || downloaded}
+            onClick={() => setPrinting(true)}
+            disabled={printing}
             className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground hover:bg-[#e0d100] disabled:opacity-50"
           >
-            {generating ? (
-              <>
-                <RotateCw className="size-4 animate-spin" />
-                Génération...
-              </>
-            ) : downloaded ? (
-              <>
-                <CheckCircle2 className="size-4" />
-                Téléchargé !
-              </>
-            ) : (
-              <>
-                <FileDown className="size-4" />
-                Télécharger le PDF
-              </>
-            )}
+            <FileDown className="size-4" aria-hidden="true" />
+            Générer le PDF
           </button>
         </div>
       </div>
+      {printing && <ReportPrintSheet audit={audit} mode={mode} />}
     </div>
   )
 }

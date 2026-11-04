@@ -10,12 +10,22 @@ import {
   IssueSeverity,
   IssuePillar,
   InspectionDetail,
+  LocalVisibility,
+  QuerySetSummary,
 } from '@/lib/audit-data';
+import type { GeoZone } from '@/core/domain/zones';
+import { normalizeText } from '@/core/domain/scoring/autocomplete-relevance';
+import { serpForQuery } from '@/core/domain/scoring/query-candidates';
+import type { KeywordResearch } from '@/core/domain/keyword-research';
+import type { PageRewrite } from '@/core/domain/page-rewrite';
+import { detectEstablishments, parseAddress, zoneCoverage, zoneMeasures } from '@/core/domain/local-visibility';
 import type {
   BacklinkReport,
+  CrawlScope,
   EditorialEvaluation,
   EditorialSignals,
   GeoEvaluation,
+  PageGoal,
   PageRole,
   RoleSignals,
   SerpAnalysis,
@@ -34,6 +44,7 @@ import { compareIssues, getIssueImpact, IMPACT_RANK } from '@/lib/issue-impact';
 import { getScoreEffect } from '@/lib/score-effect';
 import { buildEditorialSections, editorialCategories, intentSummary, positionSummary } from './editorial-sections';
 import { classifyPageRole, resolvePageRole, ROLE_LABEL } from '@/core/domain/scoring/page-role';
+import { GOAL_LABEL, resolveGoal } from '@/core/domain/scoring/page-goal';
 import { getInspectionTarget } from '@/lib/issue-routing';
 import { describePagePosition } from '@/lib/serp-labels';
 import { buildSynthesisAdvice } from './synthesis-advice';
@@ -63,6 +74,8 @@ export type PersistenceAuditWithRelations = {
   errorMessage?: string | null;
   /** JSON BacklinkReport relevé pendant le crawl */
   backlinksRaw?: string | null;
+  /** JSON CrawlScope : périmètre d'exploration */
+  crawlScopeRaw?: string | null;
   project?: {
     id: string;
     domain: string;
@@ -97,6 +110,8 @@ export type PersistencePageRecord = {
   targetQuerySource?: string | null;
   metricsRaw?: string | null;
   aiEvaluationRaw?: string | null;
+  /** Empreinte du contenu : une réécriture proposée sur un autre contenu est périmée */
+  contentHash?: string | null;
 };
 
 export type PersistenceIssueRecord = {
@@ -132,6 +147,7 @@ type PageMetrics = {
     roleSignals?: RoleSignals;
   };
   roleOverride?: PageRole;
+  goalOverride?: PageGoal;
   techMeasuredPoints?: number;
   links?: { href: string; text: string; internal: boolean; nofollow: boolean }[];
   inlinkSources?: string[];
@@ -145,6 +161,11 @@ type PageEvaluation = {
   serp?: SerpAnalysis;
   serpQueries?: SerpAnalysis[];
   serpHistory?: SerpHistoryEntry[];
+  serpOpinion?: { text: string; model: string; createdAt: string; basedOn: string[] };
+  /** Requête cible décochée par l'utilisateur au dernier lancement (non mesurée volontairement) */
+  serpTargetSkipped?: string;
+  keywords?: KeywordResearch;
+  rewrite?: PageRewrite;
 };
 
 function parseJson<T>(raw?: string | null): T | null {
@@ -162,6 +183,32 @@ function readMetrics(page: PersistencePageRecord): PageMetrics | null {
 
 function readEvaluation(page: PersistencePageRecord): PageEvaluation | null {
   return parseJson<PageEvaluation>(page.aiEvaluationRaw);
+}
+
+/** Requêtes notées de la page, de la plus lourde à la plus légère */
+function querySetOf(page: PersistencePageRecord): QuerySetSummary[] | undefined {
+  const set = readEvaluation(page)?.editorial?.querySet;
+  if (!set?.length) return undefined;
+  return [...set]
+    .sort((a, b) => b.weight - a.weight)
+    .map((entry) => ({ query: entry.query, weight: entry.weight, ...(entry.volume !== undefined ? { volume: entry.volume } : {}) }));
+}
+
+/** Adresse la plus fréquente du site (le siège, souvent en pied de page), relevée par l'analyse des coordonnées */
+const siteAddressCache = new WeakMap<PersistencePageRecord[], string | null>();
+function siteAddressOf(pages: PersistencePageRecord[]): string | null {
+  if (siteAddressCache.has(pages)) return siteAddressCache.get(pages) ?? null;
+  const counts = new Map<string, { count: number; text: string }>();
+  for (const page of pages) {
+    const text = parseJson<PageEvaluation>(page.aiEvaluationRaw)?.geo?.napConsistency?.detectedAddress;
+    const parsed = parseAddress(text);
+    if (!parsed || !text) continue;
+    const entry = counts.get(parsed.postalCode) ?? { count: 0, text };
+    counts.set(parsed.postalCode, { count: entry.count + 1, text: entry.text });
+  }
+  const top = Array.from(counts.values()).sort((a, b) => b.count - a.count)[0]?.text ?? null;
+  siteAddressCache.set(pages, top);
+  return top;
 }
 
 function formatResponseTime(page: PersistencePageRecord): string {
@@ -246,11 +293,17 @@ function roleOf(page: PersistencePageRecord) {
     ...metrics?.content?.roleSignals,
   });
   const { role, source } = resolvePageRole({ manual: metrics?.roleOverride, ai: editorial?.role, detected });
+  const { goal, source: goalSource } = resolveGoal({ manual: metrics?.goalOverride, role });
   return {
     role,
     roleLabel: ROLE_LABEL[role],
     roleSource: source,
     roleReason: source === 'ai' ? editorial?.roleReason : undefined,
+    goal,
+    goalLabel: GOAL_LABEL[goal],
+    goalSource,
+    // Pistes issues d'une analyse faite sous un autre objectif (« aller droit au but » n'en a pas besoin)
+    goalStale: Boolean(editorial) && goal !== 'direct' && (editorial?.goal ?? 'cover') !== goal ? true : undefined,
   };
 }
 
@@ -305,13 +358,15 @@ export class AuditPresenter {
    */
   public static toProjectAuditData(
     audit: PersistenceAuditWithRelations,
-    projectInfo?: { id: string; domain: string; name: string }
+    projectInfo?: { id: string; domain: string; name: string; zonesRaw?: string | null; pageZonesRaw?: string | null }
   ): ProjectAuditData {
     const domain = projectInfo?.domain || audit.project?.domain || 'domaine-inconnu.fr';
     const projectName = projectInfo?.name || audit.project?.name || domain.split('.')[0];
     const projectId = projectInfo?.id || audit.projectId;
 
-    const isLocked = audit.status !== 'COMPLETED';
+    // Verrouillé tant que l'analyse IA n'a jamais abouti : une ré-analyse (page ajoutée, rôle changé) d'un audit déjà
+    // terminé laisse les résultats affichés pendant qu'elle tourne
+    const isLocked = audit.status !== 'COMPLETED' && !audit.completedAt;
 
     const pages = audit.pages ?? [];
     // Phase 1 : seules les anomalies techniques sont exposées
@@ -334,7 +389,11 @@ export class AuditPresenter {
             techScore * 0.4 + (editorialScore ?? 0) * 0.35 + (geoScore ?? 0) * 0.25
         );
 
-    const subpages = pages.map((p) => this.toSubpageItem(p));
+    // Zones ciblées : celles du projet, et la zone propre de certaines pages (clé d'URL sans protocole ni www)
+    const zones = parseJson<GeoZone[]>(projectInfo?.zonesRaw) ?? [];
+    const pageZones = parseJson<Record<string, GeoZone>>(projectInfo?.pageZonesRaw) ?? {};
+    const subpages = pages.map((p) => this.withZone(this.toSubpageItem(p), p, zones, pageZones, pages));
+    const localVisibility = isLocked && zones.length === 0 ? undefined : this.toLocalVisibility(pages, subpages, zones);
     const pillarPages = isLocked
       ? []
       : pages.filter((p) => p.isPillar).map((p) => this.toPillarPage(p));
@@ -407,6 +466,7 @@ export class AuditPresenter {
         isCrawling,
       },
       status: audit.status,
+      ...(audit.status === 'AWAITING_AI_SELECTION' && audit.errorMessage ? { interruptionNotice: audit.errorMessage } : {}),
       isLocked,
       scores: {
         global: globalScore,
@@ -448,12 +508,144 @@ export class AuditPresenter {
       globalIssues,
       inspections,
       backlinks: parseJson<BacklinkReport>(audit.backlinksRaw) ?? undefined,
+      crawlScope: parseJson<CrawlScope>(audit.crawlScopeRaw) ?? undefined,
+      zones,
+      localVisibility,
+      // Une page stratégique analysée porte l'origine de son analyse (IA ou heuristique)
+      analysis: {
+        pillarsDone: pages.filter((p) => p.isPillar && readEvaluation(p)?.editorialStatus).length,
+        pillarsTotal: pages.filter((p) => p.isPillar).length,
+      },
     };
   }
 
   /**
    * Convertit un enregistrement Page en SubpageItem pour le tableau d'exploration
    */
+  /**
+   * Zone propre à la page, ou ville repérée par l'IA à proposer : une page locale dont la ville n'est ni sa zone ni une
+   * zone du projet (page « agence Dreux » d'un site ciblant Chartres). Rien n'est appliqué sans confirmation.
+   */
+  private static withZone(
+    item: SubpageItem,
+    page: PersistencePageRecord,
+    zones: GeoZone[],
+    pageZones: Record<string, GeoZone>,
+    pages: PersistencePageRecord[] = []
+  ): SubpageItem {
+    // Même clé que SiteCrawler.urlKey : hôte sans www, chemin sans slash final, requête conservée
+    const keyOf = (url: string) => {
+      try {
+        const u = new URL(url);
+        const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, '') : u.pathname;
+        return `${u.hostname.toLowerCase().replace(/^www\./, '')}${path}${u.search}`;
+      } catch {
+        return url;
+      }
+    };
+    const own = pageZones[keyOf(page.url)];
+    if (own) return { ...item, zone: own };
+    // Ville proposée : celle de l'adresse de la page si elle diffère du siège (établissement), sinon celle repérée par
+    // l'IA pour une page locale
+    const evaluation = readEvaluation(page);
+    const address = parseAddress(evaluation?.geo?.napConsistency?.detectedAddress);
+    const siteAddress = parseAddress(siteAddressOf(pages));
+    const establishment = address && siteAddress && address.postalCode !== siteAddress.postalCode ? address : null;
+    const local = evaluation?.editorial?.search?.local;
+    const city = establishment?.city ?? (local?.isLocalBusiness ? local.city?.trim() : undefined);
+    const key = (value: string) => normalizeText(value);
+    const known = zones.some(
+      (zone) =>
+        key(zone.name) === key(city ?? '') ||
+        key(zone.city.name) === key(city ?? '') ||
+        Boolean(establishment && zone.postalCodes?.includes(establishment.postalCode))
+    );
+    return city && !known
+      ? { ...item, zoneSuggestion: city, ...(establishment ? { zoneSuggestionPostalCode: establishment.postalCode } : {}) }
+      : item;
+  }
+
+  /**
+   * Visibilité locale : pour chaque zone (projet, puis zones propres des pages), pages qui la couvrent et bilan des
+   * mesures Google faites depuis elle ; établissements d'un réseau (adresse différente du siège) avec leurs coordonnées.
+   * Le siège, affiché en pied de page partout, ne compte pas comme page dédiée à sa ville.
+   */
+  private static toLocalVisibility(
+    pages: PersistencePageRecord[],
+    subpages: SubpageItem[],
+    zones: GeoZone[]
+  ): LocalVisibility {
+    const items = pages
+      .filter((page) => page.httpStatus < 400 && page.isIndexable)
+      .map((page) => {
+        const item = subpages.find((sub) => sub.id === page.id);
+        const nap = readEvaluation(page)?.geo?.napConsistency;
+        return {
+          id: page.id,
+          path: pathOf(page),
+          title: page.title,
+          h1: page.h1,
+          address: nap?.detectedAddress ?? null,
+          phone: nap?.detectedPhone ?? null,
+          schemaConsistent: nap?.consistencyMeasured ? nap.isConsistent : null,
+          zone: item?.zone
+        };
+      });
+    const establishments = detectEstablishments(items);
+    const establishmentIds = new Set(establishments.map((item) => item.page.id));
+    const localPages = items.map((item) => ({
+      ...item,
+      zoneId: item.zone?.id,
+      address: establishmentIds.has(item.id) ? item.address : null
+    }));
+    const measures = subpages.flatMap((sub) => (sub.serpQueries ?? []).map((serp) => ({ path: sub.path, serp })));
+    const pageOnlyZones = subpages
+      .map((sub) => sub.zone)
+      .filter((zone): zone is GeoZone => Boolean(zone && !zones.some((item) => item.id === zone.id)))
+      .filter((zone, index, list) => list.findIndex((item) => item.id === zone.id) === index);
+
+    return {
+      zones: [...zones.map((zone) => ({ zone, fromPage: false })), ...pageOnlyZones.map((zone) => ({ zone, fromPage: true }))].map(
+        ({ zone, fromPage }) => ({
+          zone,
+          fromPage,
+          coverage: zoneCoverage(zone, localPages),
+          measures: zoneMeasures(zone.id, measures)
+        })
+      ),
+      establishments: establishments.map(({ page, postalCode, city }) => ({
+        pageId: page.id,
+        path: page.path,
+        title: page.title ?? page.path,
+        postalCode,
+        city,
+        phone: page.phone,
+        schemaConsistent: page.schemaConsistent,
+        zoneLabel: page.zone?.label
+      }))
+    };
+  }
+
+  /**
+   * Relevé principal affiché dans Positionnement : celui de la requête visée actuelle (éventuellement mesurée comme
+   * candidate). Requête changée sans nouvelle mesure : l'ancien relevé reste visible, signalé comme portant sur
+   * l'ancienne requête (`serpOutdatedQuery`). Requête cible décochée au lancement : relevé de la première requête
+   * mesurée, signalé par `serpTargetSkipped`. Relevé en cours ou en attente : affiché tel quel.
+   */
+  private static currentSerp(
+    page: PersistencePageRecord
+  ): Pick<SubpageItem, 'serp' | 'serpOutdatedQuery' | 'serpTargetSkipped'> {
+    const evaluation = readEvaluation(page);
+    const stored = evaluation?.serp;
+    if (!stored || stored.status !== 'DONE') return { serp: stored };
+    const target = evaluation?.editorial?.search?.targetQuery.query ?? page.targetQuery ?? undefined;
+    const current = serpForQuery(target, stored, evaluation?.serpQueries);
+    if (current) return { serp: current };
+    const skipped = evaluation?.serpTargetSkipped;
+    if (skipped && target && normalizeText(skipped) === normalizeText(target)) return { serp: stored, serpTargetSkipped: true };
+    return { serp: stored, serpOutdatedQuery: stored.query };
+  }
+
   public static toSubpageItem(page: PersistencePageRecord): SubpageItem {
     const wordCount = page.wordCount ?? 0;
     // Google n'impose aucune longueur minimale : seul un contenu quasi vide est signalé
@@ -478,9 +670,21 @@ export class AuditPresenter {
       responseTime: formatResponseTime(page),
       techScore: Math.round(page.techScore ?? 0),
       ...roleOf(page),
-      serp: readEvaluation(page)?.serp,
+      ...this.currentSerp(page),
       serpQueries: readEvaluation(page)?.serpQueries,
+      serpOpinion: (() => {
+        const evaluation = readEvaluation(page);
+        const opinion = evaluation?.serpOpinion;
+        if (!opinion) return undefined;
+        const current = (evaluation?.serpQueries ?? (evaluation?.serp ? [evaluation.serp] : []))
+          .filter((serp) => serp.status === 'DONE')
+          .map((serp) => serp.fetchedAt ?? '')
+          .sort();
+        return { ...opinion, outdated: JSON.stringify(current) !== JSON.stringify(opinion.basedOn) };
+      })(),
       queryCandidates: readEvaluation(page)?.editorial?.search?.candidates,
+      keywords: readEvaluation(page)?.keywords,
+      querySet: querySetOf(page),
       serpHistory: readEvaluation(page)?.serpHistory,
     };
   }
@@ -554,7 +758,7 @@ export class AuditPresenter {
       intentMatchScore: Math.min(20, Math.max(0, Math.round(editorial?.intentMatch?.score ?? 0))),
       hotZonesScore: Math.min(
         15,
-        Math.max(0, Math.round(editorial?.hotZonesOptimization?.score ?? 0))
+        Math.max(0, Math.round(editorial?.points?.hotZones?.earned ?? editorial?.hotZonesOptimization?.score ?? 0))
       ),
       cannibalizationStatus,
       cannibalizationTarget: cannibalizationStatus === 'none' ? undefined : competingPath,
@@ -573,7 +777,12 @@ export class AuditPresenter {
       indexable: Boolean(page.isIndexable),
       follow: true,
       ...roleOf(page),
-      serp: evaluation?.serp,
+      querySet: querySetOf(page),
+      serp: serpForQuery(
+        editorial?.search?.targetQuery.query ?? page.targetQuery ?? undefined,
+        evaluation?.serp,
+        evaluation?.serpQueries
+      ),
     };
   }
 
@@ -696,12 +905,17 @@ export class AuditPresenter {
     const hideAi = blocked || locked;
 
     const metrics = readMetrics(page);
-    const { role } = roleOf(page);
+    const { role, goal, goalStale } = roleOf(page);
     const evaluation = hideAi ? null : readEvaluation(page);
     const editorial = evaluation?.editorial;
     const geo = evaluation?.geo;
-    // Positionnement mesuré (SERP) : n'est utilisé que lorsque l'analyse est terminée
-    const serp = evaluation?.serp?.status === 'DONE' ? evaluation.serp : undefined;
+    // Positionnement mesuré (SERP) : relevé terminé de la requête visée actuelle seulement ; après un changement de
+    // requête, les résultats de l'ancienne ne sont plus montrés (ni position, ni concurrents, ni questions)
+    const serp = serpForQuery(
+      editorial?.search?.targetQuery.query ?? page.targetQuery ?? undefined,
+      evaluation?.serp,
+      evaluation?.serpQueries
+    );
 
     const responseTime = formatResponseTime(page);
     const responseMs = metrics?.responseTimeMs;
@@ -905,12 +1119,14 @@ export class AuditPresenter {
       ? buildEditorialSections({
           editorial,
           role,
+          goal,
+          goalStale,
           serp,
           signals: metrics?.content?.signals,
           page: { title: page.title, metaDescription: page.metaDescription, wordCount: page.wordCount ?? 0 },
         })
       : [];
-    const editorialCategoryBars = editorial ? editorialCategories(editorial, role) : [];
+    const editorialCategoryBars = editorial ? editorialCategories(editorial, role, goal) : [];
 
     // ---------------- GEO ----------------
     // Balisage Schema.org (porte aussi les signaux E-E-A-T) : mis en avant si une anomalie le réclame
@@ -941,7 +1157,7 @@ export class AuditPresenter {
     const geoAccordions: InspectionData['geo']['accordions'] = geo
       ? [
           {
-            title: '1. Accessibilité & Standards GEO',
+            title: 'Accès des moteurs IA',
             scoreText: `${geo.aiBotsAccessibility.score}/15`,
             aiReasoning: `${geo.aiBotsAccessibility.critique} ${geo.llmsTxtStandard.critique}`,
             items: [
@@ -968,7 +1184,7 @@ export class AuditPresenter {
             ],
           },
           {
-            title: '2. Citabilité & Autorité',
+            title: 'Passages que l’IA peut citer',
             scoreText: geo.aiCitability.applicable === false ? `${geo.authoritySources.score}/5` : `${geo.aiCitability.score + geo.authoritySources.score}/45`,
             aiReasoning: `${geo.aiCitability.critique} ${geo.aiCitability.source === 'AI' ? geo.aiCitability.actionableAdvice : ''} ${geo.authoritySources.critique}`.replace(/\s+/g, ' ').trim(),
             items: [
@@ -1039,7 +1255,7 @@ export class AuditPresenter {
             ],
           },
           {
-            title: '3. Schema.org & Cohérence NAP',
+            title: 'Données structurées et coordonnées',
             scoreText: `${geo.schemaOrgLdJson.score + geo.napConsistency.score}/${25 + napMeasuredPoints(geo.napConsistency)}`,
             aiReasoning: `${geo.schemaOrgLdJson.critique} ${geo.napConsistency.actionableAdvice}`,
             schemaSnippet,
@@ -1115,11 +1331,11 @@ export class AuditPresenter {
         categories: techCategories,
         priorities: toPriorities('TECH'),
         accordions: [
-          { title: '1. Indexabilité et Réponses HTTP', scoreText: ratioText(httpItems), items: httpItems },
-          { title: '2. Titres & En-têtes (H1-H6)', scoreText: ratioText(headingItems), items: headingItems },
-          { title: '3. Balises Title & Meta', scoreText: ratioText(metaItems), items: metaItems },
-          { title: '4. Performance', scoreText: ratioText(performanceItems), items: performanceItems },
-          { title: '5. Maillage & Architecture', scoreText: ratioText(linkItems), items: linkItems },
+          { title: 'Accès de Google à la page', scoreText: ratioText(httpItems), items: httpItems },
+          { title: 'Titre principal et sous-titres', scoreText: ratioText(headingItems), items: headingItems },
+          { title: 'Titre et description dans Google', scoreText: ratioText(metaItems), items: metaItems },
+          { title: 'Vitesse d’affichage', scoreText: ratioText(performanceItems), items: performanceItems },
+          { title: 'Liens internes vers la page', scoreText: ratioText(linkItems), items: linkItems },
         ],
       },
       editorial: {
@@ -1138,6 +1354,18 @@ export class AuditPresenter {
         queryConfidence: editorial?.search?.targetQuery.confidence,
         queryKept: editorial?.search?.targetQuery.kept,
         position: editorial ? positionSummary(editorial, role, serp) : undefined,
+        keywords: hideAi ? undefined : readEvaluation(page)?.keywords,
+        querySet: hideAi ? undefined : [...(editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight),
+        querySetManual: Boolean(parseJson<{ querySetOverride?: string[] }>(page.metricsRaw)?.querySetOverride?.length),
+        rewrite: (() => {
+          const rewrite = hideAi ? undefined : readEvaluation(page)?.rewrite;
+          if (!rewrite) return undefined;
+          const heaviest = [...(editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight)[0]?.query;
+          const principal = heaviest ?? editorial?.search?.targetQuery.query ?? page.targetQuery ?? page.h1 ?? page.title ?? '';
+          const outdated =
+            rewrite.basedOn.contentHash !== (page.contentHash ?? '') || rewrite.basedOn.goal !== roleOf(page).goal || rewrite.basedOn.principal !== principal;
+          return { ...rewrite, outdated };
+        })(),
         priorities: hideAi ? [] : toPriorities('EDITORIAL'),
         accordions: editorialAccordions,
       },

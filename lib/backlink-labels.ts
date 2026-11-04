@@ -24,5 +24,7 @@ export function backlinkSummary(report: BacklinkReport) {
     found: found.length,
     links: links.length,
     nofollow: links.filter((link) => link.nofollow).length,
+    /** Pages du site qui reçoivent au moins un lien vérifié */
+    targets: new Set(links.map((link) => link.targetUrl)).size,
   }
 }

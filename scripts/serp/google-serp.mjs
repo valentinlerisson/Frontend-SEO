@@ -5,6 +5,8 @@
  *   node scripts/serp/google-serp.mjs "requête" --pages 1 --profile ./.serp-profile --out results.json [--domain site.fr]
  *
  * --domain : pour les résultats de ce domaine, les liens annexes (sitelinks) sont aussi extraits.
+ * --uule : endroit simulé de l'internaute (paramètre uule de Google, version 2 à coordonnées, calculé par l'application
+ *          à partir d'une zone ciblée). Non vérifié sur de vraies recherches : à confirmer en comparant deux villes.
  *
  * Sortie : JSON sur la sortie standard (ou dans --out) ; journaux sur la sortie d'erreur.
  * Codes de sortie : 0 succès ; 2 captcha ou blocage (résolution manuelle requise) ; 1 autre erreur.
@@ -20,7 +22,7 @@ import { parseGoogleResults, resolveRedirects, parseSerpFeatures } from './parse
 class GoogleBlockedError extends Error {}
 
 function parseArgs(argv) {
-  const args = { query: '', pages: 1, start: 0, profile: './.serp-profile', timeout: 180, out: '', debugDir: 'debug', domain: '' };
+  const args = { query: '', pages: 1, start: 0, profile: './.serp-profile', timeout: 180, out: '', debugDir: 'debug', domain: '', uule: '' };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -31,6 +33,8 @@ function parseArgs(argv) {
     else if (arg === '--out') args.out = argv[++i];
     else if (arg === '--debug-dir') args.debugDir = argv[++i];
     else if (arg === '--domain') args.domain = (argv[++i] ?? '').toLowerCase().replace(/^www\./, '');
+    // Endroit simulé de l'internaute (paramètre uule de Google, calculé par l'application à partir de la zone ciblée)
+    else if (arg === '--uule') args.uule = argv[++i] ?? '';
     else rest.push(arg);
   }
   args.query = rest.join(' ').trim();
@@ -69,7 +73,7 @@ async function saveDebug(page, dir) {
   }
 }
 
-export async function searchGoogle({ query, pages, start = 0, profile, timeout, debugDir, domain }) {
+export async function searchGoogle({ query, pages, start = 0, profile, timeout, debugDir, domain, uule = '' }) {
   const context = await chromium.launchPersistentContext(profile, {
     channel: 'chrome',
     headless: false,
@@ -85,7 +89,7 @@ export async function searchGoogle({ query, pages, start = 0, profile, timeout, 
     // `start` : première page lue (0 = première page de Google) ; les positions tiennent compte des pages sautées
     for (let index = start; index < start + pages; index++) {
       if (index > start) await sleep(3000 + Math.random() * 5000); // pause de 3 à 8 s entre deux pages
-      const url = `https://www.google.fr/search?hl=fr&gl=fr&pws=0&q=${encodeURIComponent(query)}&start=${10 * index}`;
+      const url = `https://www.google.fr/search?hl=fr&gl=fr&pws=0&q=${encodeURIComponent(query)}&start=${10 * index}${uule ? `&uule=${encodeURIComponent(uule)}` : ''}`;
       await page.goto(url);
 
       if (!(await waitForResults(page, timeout))) {

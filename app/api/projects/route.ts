@@ -1,10 +1,13 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { AuditService } from '@/core/services/audit-service';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    // Audits restés « en cours » après un arrêt du serveur : remis en état avant l'affichage des projets
+    await AuditService.recoverInterrupted().catch((err) => console.error('Reprise après interruption impossible:', err));
     const projects = await prisma.project.findMany({
       include: {
         audits: {

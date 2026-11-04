@@ -1,5 +1,5 @@
 import type { QueryCandidate, SearchIntent, SerpAnalysis } from '../types';
-import { isSameQuery, isUsableSeed, normalizeText } from './autocomplete-relevance';
+import { contentTokens, isSameQuery, isUsableSeed, normalizeText, stripPlaces } from './autocomplete-relevance';
 
 /**
  * Requêtes candidates d'une page : recherches génériques qu'un prospect taperait sans connaître le site
@@ -7,8 +7,20 @@ import { isSameQuery, isUsableSeed, normalizeText } from './autocomplete-relevan
  * le site sort forcément dessus, la mesurer ne prouve rien.
  */
 
-/** Requêtes candidates gardées par page */
-export const MAX_QUERY_CANDIDATES = 5;
+/** Mots-clés de départ gardés par page (envoyés à Keyword Planner) */
+export const MAX_QUERY_CANDIDATES = 12;
+/**
+ * Version de la consigne qui produit les mots-clés de départ : des candidates d'une version précédente (5 formulations
+ * longues, souvent sans volume) ne sont pas reprises, l'IA en propose de nouvelles
+ */
+export const CANDIDATES_VERSION = 2;
+
+/** Au moins un mot porteur de sens du mot-clé figure dans la page (pluriels confondus) : l'IA n'invente pas de sujet */
+export function mentionedInPage(query: string, pageText: string): boolean {
+  const stem = (token: string) => (token.length > 3 ? token.replace(/[sx]$/, '') : token);
+  const page = new Set(contentTokens(pageText).map(stem));
+  return contentTokens(query).some((token) => page.has(stem(token)));
+}
 /** Requêtes mesurées dans Google par page et par lancement */
 export const MAX_SERP_QUERIES = 3;
 
@@ -26,11 +38,14 @@ export function containsBrand(query: string, brands: string[]): boolean {
 export function sanitizeCandidates(
   proposals: { query: string; intent: SearchIntent }[],
   brands: string[],
-  max = MAX_QUERY_CANDIDATES
+  max = MAX_QUERY_CANDIDATES,
+  places: string[] = []
 ): QueryCandidate[] {
   const kept: QueryCandidate[] = [];
   for (const proposal of proposals) {
-    const query = proposal.query.replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 6).join(' ');
+    // Aucun lieu dans une recherche proposée : la zone choisie est ajoutée au moment de la mesure
+    const clean = stripPlaces(proposal.query.replace(/\s+/g, ' ').trim().toLowerCase(), places);
+    const query = clean.split(' ').slice(0, 6).join(' ');
     if (!query || !isUsableSeed(query) || containsBrand(query, brands)) continue;
     if (kept.some((candidate) => isSameQuery(candidate.query, query) || isSameQuery(query, candidate.query))) continue;
     kept.push({ query, intent: proposal.intent });
@@ -65,6 +80,26 @@ export function serpQueriesFor(target: string, candidates: QueryCandidate[], max
   return queries;
 }
 
+/** Requêtes choisies à la main pour une page avant une mesure Google (proposées gardées et requêtes ajoutées) */
+export const MAX_CHOSEN_SERP_QUERIES = 6;
+
+/**
+ * Liste de requêtes choisie par l'utilisateur, nettoyée : textes de 120 caractères au plus, espaces réduits, sans
+ * doublon (même texte normalisé), dans l'ordre donné, 6 au plus. Mesurées telles quelles : aucun lieu retiré.
+ */
+export function chosenSerpQueries(raw: unknown, max = MAX_CHOSEN_SERP_QUERIES): string[] {
+  if (!Array.isArray(raw)) return [];
+  const queries: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== 'string') continue;
+    const query = value.replace(/\s+/g, ' ').trim();
+    if (!query || query.length > 120 || queries.some((kept) => normalizeText(kept) === normalizeText(query))) continue;
+    queries.push(query);
+    if (queries.length >= max) break;
+  }
+  return queries;
+}
+
 /** Position de la page dans un relevé : à part entière, sinon en lien annexe */
 export function pageRank(serp: Pick<SerpAnalysis, 'pagePosition' | 'pageSitelinkOf'>): number | null {
   return serp.pagePosition ?? serp.pageSitelinkOf ?? null;
@@ -93,3 +128,23 @@ export function betterMeasuredTarget(
     .sort((a, b) => (pageRank(a.serp) ?? 99) - (pageRank(b.serp) ?? 99))[0];
   return best?.serp.query;
 }
+
+/**
+ * Relevé Google de la requête visée : celui de la cible enregistrée s'il porte sur cette requête, sinon une mesure de
+ * la même requête parmi les recherches mesurées (une candidate devenue cible). Requête changée sans nouvelle mesure :
+ * aucun relevé, plutôt qu'afficher et compter les résultats d'une autre requête. Mêmes mots à un près dans les deux
+ * sens (la ville ajoutée à une requête locale) ; correspondance exacte préférée.
+ */
+export function serpForQuery(
+  target: string | undefined,
+  serp: SerpAnalysis | undefined,
+  measured: SerpAnalysis[] = []
+): SerpAnalysis | undefined {
+  if (!target) return undefined;
+  const done = [serp, ...measured].filter((item): item is SerpAnalysis => item?.status === 'DONE');
+  return (
+    done.find((item) => normalizeText(item.query) === normalizeText(target)) ??
+    done.find((item) => isSameQuery(item.query, target) || isSameQuery(target, item.query))
+  );
+}
+

@@ -1,4 +1,5 @@
 import type { SearchIntent, SerpAnalysis, SerpCompetitorPage, SerpResult } from '../types';
+import { brandVariants, normalizeText } from './autocomplete-relevance';
 
 const STOP_WORDS = new Set([
   'dans', 'pour', 'avec', 'votre', 'vous', 'nous', 'notre', 'nos', 'vos', 'plus', 'comme', 'mais', 'sont', 'etre',
@@ -119,6 +120,28 @@ export function benchmarkSnippets(results: SerpResult[]): SerpAnalysis['snippetB
   };
 }
 
+/**
+ * Place du site dans le pack local : fiche dont le site web est sur le domaine, ou dont le nom contient la marque
+ * (tirée du domaine). null : pack lu sans le site ; undefined : pas de pack, ou fiches non lues.
+ */
+export function localPackRank(features: SerpAnalysis['features'], domain: string): number | null | undefined {
+  const entries = features?.localPackEntries ?? [];
+  if (!features?.localPack || entries.length === 0) return undefined;
+  const own = domain.toLowerCase().replace(/^www\./, '');
+  const brands = brandVariants(own);
+  const index = entries.findIndex((entry) => {
+    try {
+      const host = entry.website ? new URL(entry.website).hostname.toLowerCase().replace(/^www\./, '') : '';
+      if (host && (host === own || host.endsWith(`.${own}`))) return true;
+    } catch {
+      // adresse illisible : jugement sur le nom
+    }
+    const name = ` ${normalizeText(entry.name)} `;
+    return brands.some((brand) => name.includes(` ${brand} `) || name.replace(/ /g, '').includes(brand.replace(/ /g, '')));
+  });
+  return index >= 0 ? index + 1 : null;
+}
+
 export function buildSerpAnalysis(params: {
   query: string;
   fetchedAt: string;
@@ -141,6 +164,7 @@ export function buildSerpAnalysis(params: {
     ownPosition: own.length > 0 ? Math.min(...own.map((o) => o.position)) : null,
     ...locatePage(params.results, params.pageUrl),
     ownUrls: own,
+    localPackRank: localPackRank(params.features, params.domain),
     competitors: params.competitors,
     gaps: {
       missingSections: findHeadingGaps(params.ourText, params.competitors),

@@ -10,8 +10,8 @@ import { useAudit } from '@/components/providers/audit-provider'
 import { useSettings } from '@/components/providers/settings-provider'
 import { AuditStateGate } from './audit-state-gate'
 import { type SubpageItem } from '@/lib/audit-data'
-import { LOW_SEARCH_POTENTIAL_ROLES, PAGE_ROLES, ROLE_LABEL } from '@/core/domain/scoring/page-role'
-import type { PageRole } from '@/core/domain/types'
+import { LOW_SEARCH_POTENTIAL_ROLES } from '@/core/domain/scoring/page-role'
+import { PageRoleGoal } from './page-role-goal'
 
 const PAGE_SIZE = 10
 
@@ -23,7 +23,6 @@ export function SubpagesView({ projectId }: { projectId: string }) {
 
   const [subpages, setSubpages] = useState<SubpageItem[]>(audit?.subpages ?? [])
   // Requêtes saisies à la main (identifiant de page vers requête), envoyées au lancement de l'analyse
-  const [typedKeywords, setTypedKeywords] = useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'indexable' | 'not-indexable'>('all')
@@ -69,38 +68,11 @@ export function SubpagesView({ projectId }: { projectId: string }) {
     }
   }
 
-  const handleKeywordChange = (id: string, keyword: string) => {
-    setSubpages((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, targetKeyword: keyword } : item)),
-    )
-    setTypedKeywords((prev) => ({ ...prev, [id]: keyword }))
-  }
-
-  // Correction manuelle du rôle d'une page : enregistrée, puis les scores concernés sont recalculés
-  const handleRoleChange = async (pageId: string, role: PageRole) => {
-    if (!auditDbId) return
-    setLaunchError(null)
-    try {
-      const res = await fetch(`/api/audits/${auditDbId}/pages/${pageId}/role`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role }),
-      })
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Erreur ${res.status}`)
-      await refreshAudit()
-    } catch (err) {
-      setLaunchError(err instanceof Error ? err.message : 'Correction du rôle impossible')
-    }
-  }
-
   const handleLaunchAi = async () => {
     setAiLaunched(true)
     setLaunchError(null)
-    // Seules les requêtes saisies des pages sélectionnées sont envoyées ; une saisie vide laisse l'auto-détection
-    const queries = Object.fromEntries(
-      Object.entries(typedKeywords).filter(([id, value]) => selectedIds.includes(id) && value.trim()),
-    )
-    const ok = await savePillars(selectedIds, queries)
+    // Plus de requête saisie : l'IA choisit les mots-clés de chaque page, Keyword Planner donne leurs volumes
+    const ok = await savePillars(selectedIds, {})
     setAiLaunched(false)
     if (ok) {
       router.push(`/projets/${projectId}/seo-editorial`)
@@ -137,6 +109,12 @@ export function SubpagesView({ projectId }: { projectId: string }) {
   return (
     <div className="flex flex-col gap-6">
       <AuditHeader domain={audit.domain} currentTitle="Subpages" />
+
+      {audit.interruptionNotice && (
+        <p role="status" className="rounded-xl border border-line-indigo bg-tint-indigo p-3 text-sm text-sky-soft">
+          {audit.interruptionNotice}
+        </p>
+      )}
 
       {/* Main Table Card */}
       <section className="glass-card rounded-2xl border p-5 md:p-6">
@@ -261,11 +239,11 @@ export function SubpagesView({ projectId }: { projectId: string }) {
         {/* Data Table */}
         <div className="mt-6 overflow-x-auto">
           {/* Largeurs fixes : les colonnes restent alignées quelle que soit la longueur des URL */}
-          <table className="w-full min-w-[1410px] table-fixed border-separate border-spacing-0 text-left">
+          <table className="w-full min-w-[1440px] table-fixed border-separate border-spacing-0 text-left">
             <colgroup>
               <col className="w-14" />
               <col className="w-[300px]" />
-              <col className="w-[230px]" />
+              <col className="w-[260px]" />
               <col className="w-[150px]" />
               <col className="w-[115px]" />
               <col className="w-[120px]" />
@@ -293,7 +271,7 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                   URL
                 </th>
                 <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Rôle
+                  Rôle et objectif
                 </th>
                 <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
                   Badge
@@ -312,7 +290,7 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                   Maillage
                 </th>
                 <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Mot-clé cible
+                  Requêtes notées
                 </th>
                 <th scope="col" className="bg-shade-38 px-4 py-4 font-normal rounded-r-xl">
                   Page Details
@@ -353,7 +331,7 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                       <div className="flex min-w-0 items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => openInspection(page.id, 'tech')}
+                          onClick={() => openInspection(page.id)}
                           title={page.path}
                           className="min-w-0 truncate text-left text-base font-semibold text-foreground transition-colors hover:text-primary-ink cursor-pointer"
                         >
@@ -371,26 +349,20 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                       </div>
                     </th>
 
-                    {/* Rôle : modifiable, avec son origine */}
+                    {/* Rôle et objectif : modifiables, avec leur origine */}
                     <td className={cellClass}>
-                      <select
-                        value={page.role}
-                        onChange={(e) => handleRoleChange(page.id, e.target.value as PageRole)}
-                        aria-label={`Rôle de ${page.path}`}
-                        title={page.roleReason ?? 'Rôle de la page : modifiable'}
-                        className="w-full truncate rounded-lg border border-shade-44 bg-shade-18 px-2 py-1 text-xs text-foreground focus:border-primary focus:outline-none"
-                      >
-                        {PAGE_ROLES.map((role) => (
-                          <option key={role} value={role}>
-                            {ROLE_LABEL[role]}
-                          </option>
-                        ))}
-                      </select>
-                      {page.roleSource !== 'auto' && (
-                        <span className="mt-1 block text-[11px] text-primary-ink">
-                          {page.roleSource === 'manual' ? 'Modifié par vous' : 'Corrigé par l’IA'}
-                        </span>
-                      )}
+                      <PageRoleGoal
+                        pageId={page.id}
+                        path={page.path}
+                        role={page.role}
+                        roleSource={page.roleSource}
+                        roleReason={page.roleReason}
+                        goal={page.goal}
+                        goalSource={page.goalSource}
+                        goalStale={page.goalStale}
+                        variant="compact"
+                        onError={setLaunchError}
+                      />
                     </td>
 
                     {/* Badge HTTP */}
@@ -444,15 +416,25 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                       </span>
                     </td>
 
-                    {/* Mot-clé cible input */}
-                    <td className={cellClass}>
-                      <input
-                        type="text"
-                        value={page.targetKeyword}
-                        onChange={(e) => handleKeywordChange(page.id, e.target.value)}
-                        placeholder="Laissez vide pour auto-détection"
-                        className="w-full rounded-xl border border-shade-44 bg-shade-18 px-3.5 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
+                    {/* Requêtes notées : choisies par l'IA et Keyword Planner, modifiables dans le tiroir de la page */}
+                    <td className={`${cellClass} text-sm text-foreground`}>
+                      {page.querySet && page.querySet.length > 0 ? (
+                        <span>
+                          <strong>{page.querySet[0].query}</strong>
+                          {page.querySet.length > 1 && (
+                            <span className="block text-xs text-muted-foreground">
+                              +{page.querySet.length - 1} requête{page.querySet.length > 2 ? 's' : ''}
+                              {page.querySet.some((entry) => entry.volume !== undefined)
+                                ? ` · ${page.querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0).toLocaleString('fr-FR')}/mois`
+                                : ''}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          {page.isPillar ? 'Après l’analyse IA' : 'Page non analysée par l’IA'}
+                        </span>
+                      )}
                     </td>
 
                     {/* Page Details / Actions */}
@@ -460,7 +442,7 @@ export function SubpagesView({ projectId }: { projectId: string }) {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => openInspection(page.id, 'tech')}
+                          onClick={() => openInspection(page.id)}
                           title="Inspecter la page (Page Details)"
                           className="rounded-lg p-1.5 text-muted-foreground hover:bg-shade-38 hover:text-foreground transition-colors cursor-pointer"
                         >

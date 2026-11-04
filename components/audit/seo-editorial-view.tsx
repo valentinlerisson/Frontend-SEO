@@ -125,7 +125,7 @@ export function SeoEditorialView({ projectId }: { projectId: string }) {
                   Page Pillier /
                 </th>
                 <th scope="col" className="bg-shade-38 px-6 py-4 font-normal">
-                  Mots-clé Cible
+                  Requêtes notées
                 </th>
                 <th scope="col" className="bg-shade-38 px-6 py-4 font-normal">
                   Score éditorial
@@ -134,7 +134,7 @@ export function SeoEditorialView({ projectId }: { projectId: string }) {
                   Intent Match
                 </th>
                 <th scope="col" className="bg-shade-38 px-6 py-4 font-normal">
-                  Zones Chaudes
+                  Couverture des recherches
                 </th>
                 <th scope="col" className="bg-shade-38 px-6 py-4 font-normal">
                   Cannibalisation
@@ -175,9 +175,19 @@ export function SeoEditorialView({ projectId }: { projectId: string }) {
                       </button>
                     </th>
 
-                    {/* Mots-clé Cible */}
+                    {/* Requêtes notées : la plus lourde, puis le nombre d'autres et le volume total */}
                     <td className={`${cellClass} text-sm text-foreground`}>
-                      {page.isAutoDetectedKeyword ? (
+                      {page.querySet && page.querySet.length > 1 ? (
+                        <span>
+                          <strong className="text-foreground">{page.querySet[0].query}</strong>
+                          <span className="block text-xs text-muted-foreground">
+                            +{page.querySet.length - 1} requête{page.querySet.length > 2 ? 's' : ''}
+                            {page.querySet.some((entry) => entry.volume !== undefined)
+                              ? ` · ${page.querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0).toLocaleString('fr-FR')}/mois`
+                              : ''}
+                          </span>
+                        </span>
+                      ) : page.isAutoDetectedKeyword ? (
                         <span className="italic text-muted-foreground">
                           Auto détection : <strong className="text-foreground">{page.targetKeyword}</strong>
                         </span>

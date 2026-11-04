@@ -4,13 +4,17 @@ import { AuditService } from '@/core/services/audit-service';
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { url } = body;
+    const { url, scope, maxPages } = body;
 
     if (!url || typeof url !== 'string') {
       return NextResponse.json({ error: 'Une URL valide est requise' }, { status: 400 });
     }
 
-    const result = await AuditService.launchAudit(url);
+    // Périmètre et plafond de pages : validés et bornés par resolveCrawlScope
+    const result = await AuditService.launchAudit(url, {
+      scope: scope && typeof scope === 'object' ? scope : undefined,
+      maxPages: typeof maxPages === 'number' ? maxPages : undefined
+    });
 
     return NextResponse.json({
       success: true,

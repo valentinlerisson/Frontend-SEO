@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { AuditProvider } from '@/components/providers/audit-provider'
+import { ProgressAnnouncer } from '@/components/a11y/progress-announcer'
 
 // Le projet doit exister en base à chaque requête
 export const dynamic = 'force-dynamic'
@@ -20,5 +21,10 @@ export default async function ProjectLayout({
   })
   if (!project) notFound()
 
-  return <AuditProvider projectId={projectId}>{children}</AuditProvider>
+  return (
+    <AuditProvider projectId={projectId}>
+      <ProgressAnnouncer />
+      {children}
+    </AuditProvider>
+  )
 }

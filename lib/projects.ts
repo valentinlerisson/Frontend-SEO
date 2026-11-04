@@ -1,4 +1,12 @@
-export type AuditStatus = 'crawling' | 'completed'
+/**
+ * État du dernier audit : exploration du site, choix des pages stratégiques attendu, analyse IA, terminé, échec
+ */
+export type AuditStatus = 'crawling' | 'awaiting' | 'analyzing' | 'completed' | 'failed'
+
+/** Statuts pendant lesquels l'audit tourne encore (suivi automatique) */
+export function isRunning(status: AuditStatus) {
+  return status === 'crawling' || status === 'analyzing'
+}
 
 /** Scores en %, null tant que le module n'a pas été calculé (ou n'est pas inclus dans l'audit). */
 export type AuditScores = {
@@ -15,6 +23,8 @@ export type Project = {
   /** Avancement du crawl, de 0 à 100 */
   progress: number
   scores: AuditScores
+  /** Note globale de l'audit (40 % technique, 35 % contenu, 25 % moteurs IA), comme dans la synthèse ; null avant la fin */
+  overall: number | null
   lastAuditMinutesAgo: number
 }
 
@@ -26,11 +36,12 @@ export const initialStats = {
 
 export const emptyScores: AuditScores = { tech: null, edito: null, geo: null }
 
-/** Moyenne des scores disponibles, null si aucun n'est encore calculé. */
-export function globalScore(scores: AuditScores): number | null {
-  const values = [scores.tech, scores.edito, scores.geo].filter((value): value is number => value !== null)
-  if (values.length === 0) return null
-  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
+/**
+ * Note globale du projet : celle calculée par l'audit (pondérée et identique à la synthèse), null tant que l'analyse
+ * des pages stratégiques n'est pas terminée. Une moyenne simple des trois notes donnait un autre chiffre.
+ */
+export function globalScore(project: Pick<Project, 'overall'>): number | null {
+  return project.overall
 }
 
 export function formatRelativeTime(minutesAgo: number) {

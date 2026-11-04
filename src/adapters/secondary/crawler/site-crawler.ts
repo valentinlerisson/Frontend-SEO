@@ -173,7 +173,12 @@ export class SiteCrawler {
    * Gère les index de sitemaps (2 niveaux, 15 fichiers au plus). Retourne null si aucun sitemap n'est lisible.
    * Les sitemaps compressés (.gz) ne sont pas lus. Clé : `urlKey` ; valeur : URL telle que déclarée.
    */
-  public static async loadSitemapUrls(origin: string, declared: string[]): Promise<Map<string, string> | null> {
+  public static async loadSitemapUrls(
+    origin: string,
+    declared: string[],
+    /** Lire tous les sitemaps donnés (sitemaps choisis), au lieu de s'arrêter au premier trouvé */
+    readAll = false
+  ): Promise<Map<string, string> | null> {
     const MAX_FILES = 15;
     const MAX_URLS = 50000;
     const candidates =
@@ -216,9 +221,51 @@ export class SiteCrawler {
 
     for (const candidate of candidates) {
       await visit(candidate, 0);
-      if (found) break;
+      if (found && !readAll) break;
     }
     return found ? urls : null;
+  }
+
+  /**
+   * Sitemaps du site et leur nombre de pages, sans explorer le site : index déclaré dans robots.txt (ou adresses
+   * usuelles) ouvert, sitemaps feuilles comptés. Sert au choix du périmètre avant le lancement d'un audit.
+   */
+  public static async listSitemaps(origin: string, declared: string[]): Promise<{ url: string; count: number }[]> {
+    const MAX_FILES = 60;
+    const candidates =
+      declared.length > 0
+        ? declared
+        : [`${origin}/sitemap.xml`, `${origin}/sitemap_index.xml`, `${origin}/wp-sitemap.xml`];
+    const leaves = new Map<string, number>();
+    const visited = new Set<string>();
+
+    const visit = async (sitemapUrl: string, depth: number): Promise<void> => {
+      if (depth > 2 || visited.size >= MAX_FILES || visited.has(sitemapUrl) || sitemapUrl.endsWith('.gz')) return;
+      visited.add(sitemapUrl);
+      try {
+        const response = await fetch(sitemapUrl, {
+          headers: this.BROWSER_HEADERS,
+          redirect: 'follow',
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!response.ok) return;
+        const $ = cheerio.load(await response.text(), { xmlMode: true });
+        const children = $('sitemap > loc')
+          .map((_, el) => $(el).text().trim())
+          .get();
+        for (const child of children) await visit(child, depth + 1);
+        const count = $('url > loc').length;
+        if (count > 0) leaves.set(sitemapUrl, count);
+      } catch {
+        // Sitemap illisible : ignoré
+      }
+    };
+
+    for (const candidate of candidates) {
+      await visit(candidate, 0);
+      if (leaves.size > 0) break;
+    }
+    return Array.from(leaves.entries()).map(([url, count]) => ({ url, count }));
   }
 
   /**
@@ -241,9 +288,16 @@ export class SiteCrawler {
       robots?: RobotsRules | null;
       /** URL du sitemap indexées par `urlKey` (null : aucun sitemap trouvé, non mesuré) */
       sitemapUrls?: Map<string, string> | null;
+      /**
+       * Périmètre restreint (sitemaps choisis) : seules ces URL, indexées par `urlKey`, et l'accueil sont explorées.
+       * Les liens vers les autres pages comptent pour les liens entrants mais ne sont pas suivis.
+       */
+      allowedUrls?: Map<string, string> | null;
+      /** Adresses écartées (pages principales : archives, pagination…) : comptées mais jamais explorées */
+      excludePath?: (pathAndQuery: string) => boolean;
     } = {}
   ): Promise<RawPageData[]> {
-    const { maxPages = 50, maxDepth = 3, concurrency = 5, onProgress, robots, sitemapUrls } = options;
+    const { maxPages = 50, maxDepth = 3, concurrency = 5, onProgress, robots, sitemapUrls, allowedUrls, excludePath } = options;
 
     let rootOrigin = new URL(originUrl).origin;
     let rootRes = await this.fetchPage(`${rootOrigin}/`, 0);
@@ -288,6 +342,20 @@ export class SiteCrawler {
 
     // Crawl incomplet : liens trouvés mais non explorés (limite de pages) ou pages dont les liens n'ont pas été suivis
     let depthCut = false;
+    // Périmètre restreint : des liens sortent du périmètre, le graphe de liens n'est pas complet
+    let scopeCut = false;
+    const inScope = (link: string, linkKey: string) => {
+      if (allowedUrls && !allowedUrls.has(linkKey)) return false;
+      if (excludePath) {
+        try {
+          const parsed = new URL(link);
+          if (excludePath(`${parsed.pathname}${parsed.search}`)) return false;
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    };
     const register = async (
       item: { url: string; depth: number },
       res: FetchResult,
@@ -321,6 +389,10 @@ export class SiteCrawler {
           inlinks.get(linkKey)!.add(item.url);
           // Une page venue du sitemap compte pour les liens entrants, mais le parcours ne repart pas d'elle
           if (via === 'links' && !seen.has(linkKey)) {
+            if (!inScope(link, linkKey)) {
+              scopeCut = true;
+              continue;
+            }
             seen.add(linkKey);
             frontier.push({ url: link, depth: item.depth + 1 });
           }
@@ -345,13 +417,16 @@ export class SiteCrawler {
     }
 
     // Graphe complet : tous les liens trouvés ont été explorés, sans coupure de profondeur
-    const linkGraphComplete = !depthCut && Array.from(seen).every((url) => results.has(url));
+    const linkGraphComplete = !depthCut && !scopeCut && Array.from(seen).every((url) => results.has(url));
 
     // Pages du sitemap qu'aucun lien n'a permis d'atteindre : explorées dans la limite restante. Si le graphe est
     // complet, ce sont des pages orphelines (aucun lien depuis les pages accessibles depuis l'accueil).
-    if (sitemapUrls && results.size < maxPages) {
+    // Périmètre restreint : ce sont les pages choisies qu'aucun lien du périmètre n'a atteintes ; pages principales :
+    // aucune page hors liens (le sitemap n'est pas parcouru)
+    const leftovers = allowedUrls ?? (excludePath ? null : sitemapUrls);
+    if (leftovers && results.size < maxPages) {
       const rootHost = new URL(rootOrigin).hostname.replace(/^www\./, '');
-      const missing = Array.from(sitemapUrls.entries())
+      const missing = Array.from(leftovers.entries())
         .filter(([key, url]) => {
           if (seen.has(key)) return false;
           try {
@@ -378,6 +453,9 @@ export class SiteCrawler {
 
     for (const [pageKey, page] of results) {
       page.linkGraphComplete = linkGraphComplete;
+      // Sitemaps choisis : la profondeur vue en ne suivant que les liens du périmètre peut dépasser la vraie. Jusqu'à
+      // 3 clics elle reste juste (10 pts, la vraie est au plus égale) ; au-delà, elle n'est pas mesurable
+      if (allowedUrls && page.depth > 3) page.depth = -1;
       const sources = inlinks.get(pageKey);
       page.inlinksCount = sources?.size ?? 0;
       page.inlinkSources = sources

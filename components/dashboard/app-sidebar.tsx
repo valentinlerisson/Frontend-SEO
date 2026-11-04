@@ -215,7 +215,7 @@ function NavLink({
 
 /** Pastille de score global du projet : couleur selon le niveau, tiret tant qu'aucun score n'est calculé */
 function ScoreDot({ project }: { project: Project }) {
-  const score = globalScore(project.scores)
+  const score = globalScore(project)
   return (
     <span
       className={cn(
@@ -224,7 +224,7 @@ function ScoreDot({ project }: { project: Project }) {
           ? 'text-muted-foreground'
           : score >= 80
             ? 'bg-[#12b10f]/15 text-green-soft'
-            : score >= 50
+            : score >= 60
               ? 'bg-[#eab308]/15 text-amber-soft'
               : 'bg-[#ef4444]/15 text-red-soft',
       )}

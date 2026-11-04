@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { AuditService } from '@/core/services/audit-service';
 
 export async function GET(
   _req: NextRequest,
@@ -7,6 +8,8 @@ export async function GET(
 ) {
   try {
     const { auditId } = await params;
+    // Travaux interrompus (serveur arrêté pendant une exploration, une analyse IA ou une mesure Google) remis en état
+    await AuditService.recoverInterrupted(auditId).catch((err) => console.error('Reprise après interruption impossible:', err));
 
     const audit = await prisma.audit.findUnique({
       where: { id: auditId },

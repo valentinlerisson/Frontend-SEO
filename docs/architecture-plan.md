@@ -1,3 +1,10 @@
+> **⚠️ Document partiellement obsolète (rédigé le 23-26/10/2026).** Plusieurs points ne correspondent plus au code :
+> l'exploration utilise un robot maison (fetch + Cheerio, pas Crawlee) ; l'historique des positions et des backlinks est
+> gardé d'un audit à l'autre ; l'IA passe par une passerelle OpenAI-compatible (OmniRoute, modèle réglé par
+> `LLM_MODEL`) ; l'éditorial est noté sur des requêtes notées issues de Google Ads Keyword Planner ; il n'y a plus de
+> requête visée saisie. Références à jour : `CLAUDE.md`, `docs/fonctionnalites_par_page.md`,
+> `docs/tableau-metriques.md`, `docs/Fichier.md`.
+
 # PLAN D'ARCHITECTURE ET SPÉCIFICATIONS TECHNIQUES DU PROJET BIGAPP
 
 > **Document de référence architectural** : Consolidation des principes directeurs, de l'architecture hexagonale et des règles de scoring pour l'application d'audit SEO & GEO.

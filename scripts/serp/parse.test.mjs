@@ -130,6 +130,7 @@ test('parseSerpFeatures : pack local et questions « Autres questions posées »
   assert.deepEqual(features.peopleAlsoAsk, ["Quel est le prix d'une résidence seniors ?", 'Comment choisir une résidence seniors ?']);
   assert.deepEqual(parseSerpFeatures('<div id="search"><a href="https://ex.fr"><h3>Titre</h3></a></div>'), {
     localPack: false,
+    localPackEntries: [],
     peopleAlsoAsk: [],
   });
 });
@@ -140,4 +141,18 @@ test('parseSerpFeatures : la requête elle-même (data-q hors du bloc de questio
     <div data-q="Comment choisir une résidence seniors ?"></div>
   </div>`;
   assert.deepEqual(parseSerpFeatures(html, 'résidence seniors Lyon').peopleAlsoAsk, ['Comment choisir une résidence seniors ?']);
+});
+
+test('parseSerpFeatures : fiches du pack local, nom et site web (redirection Google décodée)', () => {
+  const html = `<div id="search">
+    <div data-cid="1"><div role="heading">Agence Concurrente</div><a href="https://concurrent.fr/">Site Web</a></div>
+    <div data-cid="2"><div role="heading">Big Happy</div><a href="/url?q=https://big-happy.fr/&sa=U">Site Web</a><a href="/maps">Itinéraire</a></div>
+    <a href="/search?tbm=lcl">Plus de lieux</a>
+  </div>`;
+  const features = parseSerpFeatures(html, 'agence communication toulouse');
+  assert.equal(features.localPack, true);
+  assert.deepEqual(features.localPackEntries, [
+    { name: 'Agence Concurrente', website: 'https://concurrent.fr/' },
+    { name: 'Big Happy', website: 'https://big-happy.fr/' }
+  ]);
 });

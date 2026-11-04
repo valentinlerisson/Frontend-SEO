@@ -17,41 +17,57 @@ export class GoogleAutocomplete {
     const base = seed.trim();
     if (!base) return [];
 
+    return (await this.fetchSuggestionsChecked(base, options)).suggestions;
+  }
+
+  /**
+   * Comme `fetchSuggestions`, en disant si Google a répondu : `reachable` faux quand toutes les demandes ont échoué
+   * (service injoignable), ce qui se distingue d'une recherche sans suggestion.
+   */
+  public static async fetchSuggestionsChecked(
+    seed: string,
+    options: { lang?: string; country?: string } = {}
+  ): Promise<{ suggestions: string[]; reachable: boolean }> {
+    const { lang = 'fr', country = 'fr' } = options;
+    const base = seed.trim();
+    if (!base) return { suggestions: [], reachable: true };
+
     const queries = [base, ...this.QUESTION_PREFIXES.map((prefix) => `${prefix} ${base}`)];
     const results = await Promise.all(queries.map((q) => this.fetchOne(q, lang, country)));
 
     const seen = new Set<string>();
     const merged: string[] = [];
-    for (const suggestion of results.flat()) {
+    for (const suggestion of results.flatMap((list) => list ?? [])) {
       const key = suggestion.toLowerCase();
       if (seen.has(key) || key === base.toLowerCase()) continue;
       seen.add(key);
       merged.push(suggestion);
     }
-    return merged.slice(0, this.MAX_SUGGESTIONS);
+    return { suggestions: merged.slice(0, this.MAX_SUGGESTIONS), reachable: results.some((list) => list !== null) };
   }
 
   /** Suggestions brutes pour une requête exacte (une seule demande, sans préfixe interrogatif) */
   public static async fetchExact(query: string, options: { lang?: string; country?: string } = {}): Promise<string[]> {
     const { lang = 'fr', country = 'fr' } = options;
-    return query.trim() ? this.fetchOne(query.trim(), lang, country) : [];
+    return query.trim() ? (await this.fetchOne(query.trim(), lang, country)) ?? [] : [];
   }
 
-  private static async fetchOne(query: string, lang: string, country: string): Promise<string[]> {
+  /** null : Google n'a pas répondu (erreur, délai) ; [] : réponse sans suggestion */
+  private static async fetchOne(query: string, lang: string, country: string): Promise<string[] | null> {
     try {
       const url = `${this.ENDPOINT}?client=firefox&hl=${lang}&gl=${country}&q=${encodeURIComponent(query)}`;
       const response = await fetch(url, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(4000)
       });
-      if (!response.ok) return [];
+      if (!response.ok) return null;
 
       const data: unknown = await response.json();
       const list = Array.isArray(data) ? data[1] : null;
-      if (!Array.isArray(list)) return [];
+      if (!Array.isArray(list)) return null;
       return list.filter((item): item is string => typeof item === 'string');
     } catch {
-      return [];
+      return null;
     }
   }
 }

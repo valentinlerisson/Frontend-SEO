@@ -130,7 +130,7 @@ export function inContentLinksAccordion(signals: EditorialSignals, wordCount: nu
 export function qualityAccordion(quality: ContentQualityInsights, role: PageRole): Accordion {
   const { firstHandExperience: exp, informationGain: gain } = quality;
   // L'expérience vécue n'est attendue que d'un article, d'une offre ou d'une réalisation
-  const expectsExperience = role === 'article' || role === 'offer' || role === 'case';
+  const expectsExperience = role === 'article' || role === 'informational' || role === 'offer' || role === 'case';
 
   const items: Accordion['items'] = [
     {

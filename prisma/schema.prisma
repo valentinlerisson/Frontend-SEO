@@ -11,11 +11,27 @@ generator client {
   provider = "prisma-client-js"
 }
 
+/// Recherches Google envoyées par jour, tous projets confondus (budget de la mesure Google)
+model SerpUsage {
+  /// Jour au format AAAA-MM-JJ (heure locale de la machine)
+  day       String   @id
+  searches  Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("serp_usage")
+}
+
 model Project {
   id          String   @id @default(cuid())
   domain      String   @unique
   name        String
   faviconUrl  String?
+  /// Périmètre d'exploration choisi pour ce projet (JSON CrawlScope), repris à chaque relance
+  crawlScope  String?
+  /// Zones ciblées du projet (JSON GeoZone[], 3 au plus) : requêtes proposées et lieu simulé des mesures Google
+  zonesRaw    String?
+  /// Zone propre à certaines pages (JSON { [clé d'URL]: GeoZone }), gardée d'un audit à l'autre
+  pageZonesRaw String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -44,6 +60,8 @@ model Audit {
   errorMessage     String?
   /// Backlinks relevés pendant le crawl (graphe Common Crawl + vérification), JSON BacklinkReport
   backlinksRaw     String?
+  /// Périmètre d'exploration de cet audit (JSON CrawlScope)
+  crawlScopeRaw    String?
 
   pages            Page[]
   issues           Issue[]

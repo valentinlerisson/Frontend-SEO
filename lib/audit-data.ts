@@ -1,11 +1,21 @@
 import type {
   BacklinkReport,
+  CrawlScope,
+  PageGoal,
   PageRole,
   QueryCandidate,
   SearchInsights,
   SerpAnalysis,
   SerpHistoryEntry,
 } from '@/core/domain/types'
+import type { GeoZone } from '@/core/domain/zones'
+import type { KeywordResearch } from '@/core/domain/keyword-research'
+import type { PageRewrite } from '@/core/domain/page-rewrite'
+import type { QuerySetMeasure } from '@/core/domain/scoring/query-set'
+
+/** Requête notée, résumée pour les listes */
+export type QuerySetSummary = { query: string; weight: number; volume?: number }
+import type { CoverageReason, ZoneMeasures } from '@/core/domain/local-visibility'
 
 export type PillarPage = {
   id: string
@@ -37,10 +47,18 @@ export type PillarPage = {
   roleSource: 'manual' | 'ai' | 'auto'
   /** Raison donnée par l'IA quand elle corrige le rôle */
   roleReason?: string
+  /** Objectif de la page (couvrir le sujet, présenter et convaincre, aller droit au but) et son origine */
+  goal: PageGoal
+  goalLabel: string
+  goalSource: 'manual' | 'auto'
+  /** L'analyse de l'IA a été faite sous un autre objectif : relancer l'analyse de la page pour des pistes adaptées */
+  goalStale?: boolean
   /** Analyse de la SERP de la requête cible (positionnement mesuré), si elle a été lancée */
   serp?: SerpAnalysis
   /** Relevés de position précédents (conservés d'un audit à l'autre) */
   serpHistory?: SerpHistoryEntry[]
+  /** Requêtes notées (4 au plus), de la plus lourde à la plus légère */
+  querySet?: QuerySetSummary[]
 }
 
 export type SubpageItem = {
@@ -63,14 +81,36 @@ export type SubpageItem = {
   roleLabel: string
   roleSource: 'manual' | 'ai' | 'auto'
   roleReason?: string
+  /** Objectif de la page (couvrir le sujet, présenter et convaincre, aller droit au but) et son origine */
+  goal: PageGoal
+  goalLabel: string
+  goalSource: 'manual' | 'auto'
+  /** L'analyse de l'IA a été faite sous un autre objectif : relancer l'analyse de la page pour des pistes adaptées */
+  goalStale?: boolean
   /** Score technique de la page, sur 100 */
   techScore: number
   /** Analyse de la SERP de la requête de la page, si elle a été lancée (piliers ou non) */
   serp?: SerpAnalysis
-  /** Relevés du dernier lancement : requête cible puis requêtes candidates */
+  /** Avis de l'IA sur les résultats Google ; `outdated` : des mesures ont changé depuis */
+  serpOpinion?: { text: string; model: string; createdAt: string; outdated: boolean }
+  /** Le relevé principal porte sur une ancienne requête visée (changée depuis) : à relancer */
+  serpOutdatedQuery?: string
+  /** Requête cible décochée au dernier lancement : le relevé principal est celui de la première requête mesurée */
+  serpTargetSkipped?: boolean
+  /** Relevés du dernier lancement : requêtes cochées (requête cible puis candidates par défaut) */
   serpQueries?: SerpAnalysis[]
   /** Requêtes génériques proposées par l'IA pour la page, vérifiées dans Google Autocomplete */
   queryCandidates?: QueryCandidate[]
+  /** Mots-clés de la page et leurs volumes (Keyword Planner) ; les mieux placés sont proposés à la mesure */
+  keywords?: KeywordResearch
+  /** Requêtes notées de la page : arrivent cochées dans la mesure Google */
+  querySet?: QuerySetSummary[]
+  /** Zone propre à la page (remplace les zones du projet pour ses mesures Google) */
+  zone?: GeoZone
+  /** Ville repérée dans la page (adresse d'établissement, sinon IA), absente des zones : proposée (à confirmer) */
+  zoneSuggestion?: string
+  /** Code postal de la ville proposée (adresse d'établissement) : sert à choisir la bonne commune */
+  zoneSuggestionPostalCode?: string
   /** Relevés de position précédents (conservés d'un audit à l'autre) */
   serpHistory?: SerpHistoryEntry[]
 }
@@ -235,6 +275,10 @@ export type InspectionData = {
     roleLabel: string
     roleSource: 'manual' | 'ai' | 'auto'
     roleReason?: string
+    goal: PageGoal
+    goalLabel: string
+    goalSource: 'manual' | 'auto'
+    goalStale?: boolean
     /** Moteur ayant produit l'analyse ; HEURISTIC = repli local (clé API absente ou erreur du modèle) */
     engine?: { engine: 'LLM' | 'HEURISTIC'; error?: string }
     /** Données de recherche et livrables prêts à l'emploi (absents en analyse heuristique) */
@@ -256,6 +300,13 @@ export type InspectionData = {
     queryKept?: boolean
     /** Position mesurée dans Google pour la requête cible */
     position?: { badge: string; detail: string; status: 'valid' | 'warning' | 'info'; measuredOn?: string }
+    /** Mots-clés de la page, leurs volumes de recherche et où ils figurent */
+    keywords?: KeywordResearch
+    /** Requêtes notées et leurs mesures ; `querySetManual` : choisies par l'utilisateur */
+    querySet?: QuerySetMeasure[]
+    querySetManual?: boolean
+    /** Réécriture proposée par l'IA ; `outdated` : contenu, objectif ou requête principale changés depuis */
+    rewrite?: PageRewrite & { outdated: boolean }
     accordions: EditorialAccordion[]
   }
   geo: {
@@ -275,6 +326,28 @@ export type InspectionData = {
   }
 }
 
+export type LocalVisibility = {
+  zones: {
+    zone: GeoZone
+    /** La zone vient d'une page (zone propre), pas de la liste du projet */
+    fromPage: boolean
+    coverage: { id: string; path: string; reason: CoverageReason }[]
+    measures: ZoneMeasures
+  }[]
+  establishments: {
+    pageId: string
+    path: string
+    title: string
+    postalCode: string
+    city: string
+    phone: string | null
+    /** Coordonnées visibles conformes au balisage de la page ; null : pas de balisage à comparer */
+    schemaConsistent: boolean | null
+    /** Zone propre de la page, si elle est rattachée */
+    zoneLabel?: string
+  }[]
+}
+
 export type ProjectAuditData = {
   projectId: string
   domain: string
@@ -286,6 +359,8 @@ export type ProjectAuditData = {
   }
   /** Statut brut de l'audit en base (QUEUED, CRAWLING_TECH, AWAITING_AI_SELECTION, ANALYZING_AI, COMPLETED, FAILED) */
   status: string
+  /** Travail interrompu remis en état (analyse IA à relancer) : message affiché dans Sous-pages */
+  interruptionNotice?: string
   /** true tant que l'audit n'est pas COMPLETED : scores éditorial, GEO et global verrouillés */
   isLocked: boolean
   scores: {
@@ -313,4 +388,12 @@ export type ProjectAuditData = {
   inspections: Record<string, InspectionData>
   /** Backlinks relevés pendant le crawl (absents pour un audit antérieur à leur ajout) */
   backlinks?: BacklinkReport
+  /** Zones ciblées du projet (3 au plus) */
+  zones?: GeoZone[]
+  /** Visibilité locale par zone (projet et zones propres des pages) et établissements repérés */
+  localVisibility?: LocalVisibility
+  /** Périmètre d'exploration de l'audit (absent pour un audit antérieur : tout le site) */
+  crawlScope?: CrawlScope
+  /** Avancement de l'analyse IA des pages stratégiques (annoncé aux lecteurs d'écran) */
+  analysis?: { pillarsDone: number; pillarsTotal: number }
 }

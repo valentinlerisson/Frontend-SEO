@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SerpFeatures, SerpResult } from '@/core/domain/types';
-import { SerpBlockedError, type SerpProviderPort } from '@/core/ports/serp-provider';
+import { SerpBlockedError, type SerpLocation, type SerpProviderPort } from '@/core/ports/serp-provider';
 
 const ENDPOINT = 'https://google.serper.dev/search';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -11,7 +11,7 @@ const RESULTS_PER_PAGE = 10;
 type SerperResponse = {
   organic?: { title?: string; link?: string; snippet?: string; position?: number; sitelinks?: { title?: string; link?: string }[] }[];
   peopleAlsoAsk?: { question?: string }[];
-  places?: unknown[];
+  places?: { title?: string; website?: string }[];
 };
 
 type Payload = { results: SerpResult[]; features?: SerpFeatures };
@@ -37,20 +37,21 @@ export class SerperApiSerp implements SerpProviderPort {
 
   async search(
     query: string,
-    options: { pages?: number; start?: number; domain?: string; fresh?: boolean } = {}
-  ): Promise<{ results: SerpResult[]; features?: SerpFeatures }> {
+    options: { pages?: number; start?: number; domain?: string; fresh?: boolean; location?: SerpLocation } = {}
+  ): Promise<{ results: SerpResult[]; features?: SerpFeatures; requests: number }> {
     const pages = Math.max(1, Math.min(3, options.pages ?? (Number(process.env.SERP_PAGES) || 1)));
     const start = Math.max(0, Math.min(2, options.start ?? 0));
     const domain = (options.domain ?? '').toLowerCase().replace(/^www\./, '');
-    const cacheFile = this.cacheFile(query, pages, domain, start);
+    const location = options.location?.name ?? '';
+    const cacheFile = this.cacheFile(query, pages, domain, start, location);
 
     const cached = options.fresh ? null : await this.readCache(cacheFile);
-    if (cached) return cached;
+    if (cached) return { ...cached, requests: 0 };
 
     const results: SerpResult[] = [];
     let features: SerpFeatures | undefined;
     for (let page = start; page < start + pages; page++) {
-      const data = await this.fetchPage(query, page);
+      const data = await this.fetchPage(query, page, location);
       (data.organic ?? []).forEach((item, index) => {
         if (!item.link) return;
         const resultDomain = hostOf(item.link);
@@ -74,6 +75,10 @@ export class SerperApiSerp implements SerpProviderPort {
       if (page === start && start === 0) {
         features = {
           localPack: (data.places ?? []).length > 0,
+          localPackEntries: (data.places ?? [])
+            .filter((place) => place.title)
+            .slice(0, 5)
+            .map((place) => (place.website ? { name: place.title!, website: place.website } : { name: place.title! })),
           peopleAlsoAsk: (data.peopleAlsoAsk ?? []).map((q) => q.question ?? '').filter(Boolean)
         };
       }
@@ -84,14 +89,15 @@ export class SerperApiSerp implements SerpProviderPort {
     const payload: Payload = { results, features };
     await fs.mkdir(this.cacheDir, { recursive: true });
     await fs.writeFile(cacheFile, JSON.stringify(payload));
-    return payload;
+    return { ...payload, requests: pages };
   }
 
-  private async fetchPage(query: string, page: number): Promise<SerperResponse> {
+  private async fetchPage(query: string, page: number, location: string): Promise<SerperResponse> {
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'X-API-KEY': this.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: query, gl: 'fr', hl: 'fr', num: RESULTS_PER_PAGE, page: page + 1 })
+      // `location` : lieu simulé de l'internaute (« Toulouse, Occitanie, France »)
+      body: JSON.stringify({ q: query, gl: 'fr', hl: 'fr', num: RESULTS_PER_PAGE, page: page + 1, ...(location ? { location } : {}) })
     });
     // Clé refusée ou crédits épuisés : même traitement qu'un blocage, l'utilisateur doit intervenir
     if (response.status === 401 || response.status === 403 || response.status === 429) {
@@ -101,9 +107,9 @@ export class SerperApiSerp implements SerpProviderPort {
     return (await response.json()) as SerperResponse;
   }
 
-  private cacheFile(query: string, pages: number, domain: string, start: number): string {
+  private cacheFile(query: string, pages: number, domain: string, start: number, location: string): string {
     const key = createHash('sha1')
-      .update(`${query.toLowerCase().replace(/\s+/g, ' ').trim()}|${pages}|${domain}|${start}`)
+      .update(`${query.toLowerCase().replace(/\s+/g, ' ').trim()}|${pages}|${domain}|${start}${location ? `|${location}` : ''}`)
       .digest('hex');
     return path.join(this.cacheDir, `${key}.json`);
   }

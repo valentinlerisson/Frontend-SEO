@@ -1,219 +1,163 @@
-# 📖 Guide Exhaustif des Fonctionnalités par Page — BigApp SEO (Auditly)
+# Guide des fonctionnalités par page — Auditly (BigApp SEO)
 
-Ce document répertorie l'ensemble des pages de l'application front-end, leurs éléments d'interface, les fonctionnalités interactives auxquelles l'utilisateur a accès, ainsi que l'action exacte attendue ou exécutée par chacune d'elles.
-
----
-
-## 1. Tableau de bord principal (`/` ou `/dashboard`)
-
-### Rôle de la page
-Point d'entrée de l'agence pour lancer un nouvel audit en 1 clic et consulter rapidement l'état d'activité global ainsi que les 3 derniers projets audités.
-
-### Éléments et Actions disponibles
-1. **Bannière d'accueil & Lancement rapide (`AuditLauncher`)**
-   - **Formulaire de saisie d'URL :** Champ de saisie acceptant un domaine (ex. `bighappy.fr`) ou une URL complète.
-   - **Bouton « Lancer l’audit » :** 
-     - **Action :** Valide la syntaxe du domaine via `parseDomain()`. Si valide, initialise un nouveau projet avec le statut `crawling` à 0% de progression, incrémente le compteur d'audits du mois et déclenche la simulation de crawl en arrière-plan.
-2. **Stat Cards KPI Agence (`StatCard`)**
-   - **« Projets Actifs » :** Affiche le nombre total de projets surveillés.
-   - **« Audits ce mois » :** Affiche le volume d'audits exécutés sur la période mensuelle.
-3. **Bouton « Voir tout les projets » :**
-   - **Action :** Redirige vers la vue liste complète des projets (`/projets`).
-4. **Tableau des 3 derniers audits (`ProjectsTable`)**
-   - **Ligne de projet :** Affiche le nom, le domaine, le statut (badge vert `Prêt` ou capsule jaune animée `Crawl en cours (X%)`), le score global consolidé et le temps relatif écoulé (ex. *« Il y a 2h »*).
-   - **Bouton « Accéder » (icône document) :**
-     - **Action :** Redirige immédiatement vers la synthèse de l'audit du projet (`/projets/[projectId]/synthese`).
-     - Si le projet est en cours de crawl, le bouton est remplacé par l'indicateur textuel *« En cours... »*.
+Mis à jour le 04/11/2026, d'après le code. Ce guide décrit ce que l'utilisateur voit et peut faire sur chaque écran.
+Le détail des calculs (barèmes, règles, cas limites) est dans `docs/tableau-metriques.md` (fonctionnel) et
+`docs/Fichier.md` (technique). Les routes en anglais (`/dashboard`, `/projects/...`) redirigent vers les routes
+françaises ci-dessous.
 
 ---
 
-## 2. Mes Projets (`/projets` ou `/projects`)
+## 0. Parcours en bref
 
-### Rôle de la page
-Gestionnaire de portefeuille de projets de l'agence permettant de filtrer, rechercher, relancer ou supprimer un projet.
+1. **Lancer un audit** (tableau de bord) : domaine + périmètre.
+2. **Exploration automatique** : technique de chaque page, robots.txt, sitemap, PageSpeed, backlinks (Common Crawl).
+3. **Choisir les pages piliers** (Sous-pages) : 1 à 20 pages (réglable), rôle et objectif de chacune. Aucune requête à
+   saisir.
+4. **Analyse IA** des piliers : l'IA lit la page, en tire sa problématique et ses mots-clés de départ ; Google Ads
+   Keyword Planner donne les volumes ; l'IA trie les mots-clés (visé, plus large, hors sujet) ; le code forme les
+   **requêtes notées** (4 au plus, pondérées par le volume) ; l'IA remplit les grilles de notation ; le code calcule
+   les notes.
+5. **Lire** : Synthèse, Anomalies, SEO éditorial, GEO, Backlinks, tiroir de chaque page.
+6. **Affiner** : rôle, objectif, requêtes notées (6 au plus à la main), mesure Google dans Positionnement.
+7. **Partager et suivre** : PDF du rapport ou d'une page, nouvel audit (historique des positions et backlinks gardé).
 
-### Éléments et Actions disponibles
-1. **Barre de recherche de projets :**
-   - **Action :** Filtre en temps réel la table sur le nom du projet ou son nom de domaine.
-2. **Tableau de bord exhaustif (`ProjectsListTable`)**
-   - **Colonnes de scoring décomposées :** Affiche individuellement les notes en % pour **Tech**, **Edito**, **GEO**, ainsi que le dernier audit.
-   - **Bouton « Accéder » (jaune) :**
-     - **Action :** Ouvre la synthèse de l'audit (`/projets/[projectId]/synthese`).
-   - **Bouton « Relancer l’audit » (icône rotation) :**
-     - **Action :** Réinitialise le projet au statut `crawling`, remet la progression à 0% et applique la règle d'écrasement total N-1.
-   - **Bouton « Supprimer le projet » (icône corbeille rouge) :**
-     - **Action :** Ouvre une modale de confirmation (`DeleteProjectDialog`). Si confirmée, retire le projet de la liste et décrémente les statistiques globales.
-3. **Pagination dynamique :**
-   - **Action :** Permet de feuilleter les projets par tranche de 10 résultats.
+États d'un audit : `CRAWLING_TECH` (exploration) → `AWAITING_AI_SELECTION` (pages à choisir) → `ANALYZING_AI` →
+`COMPLETED` ; `FAILED` propose de réessayer. Un travail interrompu (serveur arrêté) est remis en état à la
+prochaine ouverture : exploration → échec à relancer ; analyse IA → retour au choix des pages ; mesure Google →
+recherches « En attente », bouton « Reprendre ».
 
----
-
-## 3. Synthèse de l’audit (`/projets/[projectId]/synthese` ou `/overview`)
-
-### Rôle de la page
-Vue stratégique à l'instant T synthétisant l'état de santé du site sous la doctrine 100% Mobile-First, avec répartition par pilier et plan d'action prioritaire.
-
-### Éléments et Actions disponibles
-1. **Barre supérieure (`AuditHeader`) :**
-   - **Fil d'ariane :** Affiche `Projets / bighappy.fr / Synthèse` avec liens cliquables.
-   - **Badge de statut de crawl :** Capsule sombre avec spinner rotatif jaune `Crawl en cours (26/87)`.
-   - **Bouton « + Nouvel Audit » :** Ouvre la modale de configuration d'un nouvel audit avec bascule de contournement anti-bot (`robots.txt override`).
-2. **Bouton « Exporter en PDF » :**
-   - **Action :** Ouvre la modale d'exportation en marque blanche pour générer et télécharger le rapport client.
-3. **Cadre « Score Global » :**
-   - **Grande jauge circulaire (78%) :** Rendu SVG haute précision avec arc jaune.
-   - **Bannière rouge « 3 erreurs critiques bloquantes » (avec flèche ↗) :**
-     - **Action :** Redirige vers la page des anomalies filtrée sur les erreurs critiques (`/projets/[projectId]/global-issues?filter=critical`).
-   - **Bannière jaune « 12 avertissements » (avec flèche ↗) :**
-     - **Action :** Redirige vers la page des anomalies filtrée sur les alertes (`/projets/[projectId]/global-issues?filter=warning`).
-   - **Bannière verte « 20 bonnes pratiques » (avec flèche ↗) :**
-     - **Action :** Redirige vers la page des anomalies filtrée sur les points validés (`/projets/[projectId]/global-issues?filter=passed`).
-4. **Section « Détails des Scores » (3 cartes cliquables) :**
-   - **Carte « SEO Technique » (84/100, jauge violette) :**
-     - **Action :** Redirige vers l'écran Subpages (`/projets/[projectId]/subpages`) pour inspecter les URLs explorées.
-   - **Carte « SEO Editorial » (62/100, jauge orange) :**
-     - **Action :** Redirige vers l'écran SEO Éditorial (`/projets/[projectId]/seo-editorial`).
-   - **Carte « GEO » (84/100, jauge verte) :**
-     - **Action :** Redirige vers l'écran GEO (`/projets/[projectId]/geo`).
-5. **Carte « Conseils » (Dégradé rouge/orange) :**
-   - Affiche les recommandations prioritaires générées par l'audit avec filigrane « B » de l'agence.
+Code couleur partout : vert = bon, orange/rouge = problème **mesuré**, **bleu = information ou estimation de l'IA**
+(jamais présentée comme une erreur).
 
 ---
 
-## 4. Global Issues & Tips (`/projets/[projectId]/global-issues` ou `/issues`)
+## 1. Tableau de bord (`/`)
 
-### Rôle de la page
-Consolidation déterministe de toutes les anomalies structurelles, techniques et éditoriales détectées lors du crawl des 500 pages.
+- **Lancer un audit** (`AuditLauncher`, `audit-url-form.tsx`) : champ domaine ou URL, **périmètre**
+  (`crawl-scope-picker.tsx`) : tout le site (liens jusqu'à 6 clics puis sitemap), pages principales (2 clics,
+  50 pages) ou sitemaps choisis. Le projet est créé s'il n'existe pas ; l'exploration démarre en arrière-plan.
+- **Chiffres** : projets suivis, audits, **projets à renforcer** (note < 60).
+- **Derniers projets** : statut (badge), note, accès à la synthèse.
 
-### Éléments et Actions disponibles
-1. **Filtres thématiques par catégorie :**
-   - Boutons `All`, `Tech. & Meta`, `Structure`, `Content`.
-   - **Action :** Filtre instantanément la liste des anomalies affichées selon le domaine technique.
-2. **Cartes d'anomalies interactives :**
-   - Chaque anomalie affiche son niveau de sévérité (pastille rouge, jaune ou verte), son intitulé exact et son tag technique.
-3. **Accordéon dépliable « Thin content (pages contenant moins de 500 mots) » :**
-   - **Action :** Au clic, se déplie pour dévoiler un aperçu rapide des URLs affectées (`accueil`, `a-propos`, `strategie`) avec le nombre de mots et leur pastille de sévérité.
-   - **Lien « Voir toute les erreurs » :** Redirige vers l'écran dédié d'inspection de cette anomalie (`/projets/[projectId]/global-issues/thin-content`).
+## 2. Mes projets (`/projets`)
 
----
+- Liste paginée des projets : domaine, statut de l'audit (« Audit en cours… »), notes (éditorial, GEO et globale
+  masquées tant que l'audit n'est pas terminé).
+- **Supprimer un projet** (confirmation).
 
-## 5. Détail d'une anomalie unitaire (`/projets/[projectId]/global-issues/[issueId]`)
+## 3. Paramètres (`/parametres`)
 
-### Rôle de la page
-Vue granulaire recensant l'intégralité des URLs pénalisées par une anomalie spécifique (ex. Thin Content).
+Enregistrés dans le navigateur (`settings-provider.tsx`) :
+- Pages explorées au maximum par audit : 10 à 2 000 (150 par défaut).
+- Recherches Google par lancement : jusqu'à 60 (20 par défaut) ; par jour : jusqu'à 300 (60 par défaut).
+- Pages stratégiques analysables par l'IA : 1 à 100 (20 par défaut).
 
-### Éléments et Actions disponibles
-1. **Bouton « < Retour aux erreurs » :**
-   - **Action :** Retourne à la vue globale des anomalies (`/projets/[projectId]/global-issues`).
-2. **Barre de recherche URL :**
-   - **Action :** Filtre en direct les URLs listées dans le tableau.
-3. **Encart d'explication pédagogique :**
-   - Rappelle l'impact de l'anomalie sur le positionnement Google (seuil des 500 mots, risques de dévaluation algorithmique).
-4. **Tableau des URLs impactées :**
-   - Affiche le chemin, le nombre de mots précis, la profondeur de clic BFS (`Niv 0`, `Niv 1`, `Niv 2`), le nombre d'inlinks entrants.
-   - **Clic sur le chemin de l'URL ou sur l'icône document (`Page Details`) :**
-     - **Action :** Ouvre instantanément le **Tiroir latéral d'inspection (Sheet)** sur l'onglet Technique & Meta pour cette page spécifique.
-   - **Icône lien externe (↗) :** Ouvre l'URL réelle du site dans un nouvel onglet de navigateur.
+## 4. Barre latérale et en-tête d'audit
+
+- Barre latérale : projets avec leur note, rubriques du projet ouvert (Synthèse, Anomalies, Sous-pages,
+  SEO éditorial, Positionnement, Backlinks, GEO), Paramètres, mode clair / sombre.
+- En-tête (`audit-header.tsx`) : fil d'ariane, **Nouvel audit** (fenêtre de lancement), **Exporter le rapport** :
+  « Rapport client » (notes, résumé, 5 priorités, pages stratégiques, visibilité Google, popularité, peu de jargon)
+  ou « Rapport complet ».
+- **Limite connue** : la case « Outrepasser robots.txt » de la fenêtre de lancement **n'est reliée à rien** (état
+  local seulement, jamais envoyé au serveur).
 
 ---
 
-## 6. Subpages (`/projets/[projectId]/subpages`)
+## 5. Synthèse (`/projets/[id]/synthese`)
 
-### Rôle de la page
-Tableau de bord de transition entre le crawl déterministe et l'analyse stratégique par IA. Permet au consultant de sélectionner les 10 à 20 pages piliers à soumettre à Claude 3.5 Sonnet.
+- Jauges : note globale (technique 40 %, éditorial 35 %, GEO 25 %) et les trois notes.
+- Nombre d'anomalies par gravité.
+- **Vos priorités pour monter dans Google** et **Conseil de l'analyse** (critères les plus faibles, moyennés sur les
+  piliers où ils s'appliquent).
+- **Visibilité locale** (zones, pages dédiées, positions, pack local, établissements).
+- **Popularité du site** : domaines référents, liens vérifiés, pages du site liées.
 
-### Éléments et Actions disponibles
-1. **Compteur de sélection de pages piliers :**
-   - Badge `X / 20 sélectionnées` réactif en temps réel.
-2. **Filtres d'indexabilité :**
-   - Boutons `All`, `Indexable`, `Not indexable`.
-3. **Cases à cocher (Checkboxes) :**
-   - **Case générale d'en-tête :** Sélectionne ou désélectionne les 20 premières pages de la liste.
-   - **Case par ligne :** Ajoute ou retire la page de la sélection de pages piliers (plafond strict à 20 pour maîtriser les coûts API).
-4. **Champ de saisie « Mot-clé cible » :**
-   - Permet au consultant de forcer une requête stratégique (ex. *« agence marketing toulouse 31 »*).
-   - Si laissé vide, l'IA exécutera une auto-détection de l'intention à partir du contenu brut de la page.
-5. **Bouton jaune « Lancer l’analyse IA » :**
-   - **Action :** Lance le traitement des pages sélectionnées par Claude 3.5 Sonnet et bascule l'utilisateur vers le tableau de bord SEO Éditorial (`/projets/[projectId]/seo-editorial`).
-6. **Actions de ligne & Page Details :**
-   - **Clic sur l'URL ou sur l'icône document (`Page Details`) :** Ouvre le tiroir latéral d'inspection sur l'audit technique de la page.
-   - **Icône lien externe (↗) :** Ouvre la page en direct.
-7. **Pagination :**
-   - Navigation de page en page (`1-10 sur 87 URL`, `Précédent`, `Suivant`, numéros).
+## 6. Anomalies (`/projets/[id]/global-issues` et `/global-issues/[issueId]`)
+
+- Liste filtrable : pilier (technique, éditorial), gravité (critique, avertissement, info), recherche ; répartition
+  par impact ; chaque anomalie montre son effet sur la note.
+- Fiche d'une anomalie : pages concernées (ouvrir le tiroir ou visiter), étapes de correction.
+
+## 7. Sous-pages (`/projets/[id]/subpages`)
+
+- Toutes les pages explorées : URL, **rôle et objectif** (modifiables, recalcul de la note sans IA ; un changement
+  d'objectif qui demande un autre jugement relance l'IA de la page), statut HTTP, note technique, nombre de mots,
+  maillage (profondeur, liens entrants), **requêtes notées** (lecture seule ; modifiables dans le tiroir).
+- Sélection des **pages piliers** (1 à 20 par défaut) puis **Lancer l'analyse IA**. Plus aucune requête à saisir.
+- Message bleu si une analyse IA a été interrompue (à relancer, les pages déjà analysées ne sont pas refaites).
+
+## 8. SEO éditorial (`/projets/[id]/seo-editorial`)
+
+- KPI : note éditoriale moyenne, conflits de cannibalisation, adéquation à l'intention.
+- Tableau des piliers : **requêtes notées** (la plus lourde, « +N », volume total), note éditoriale, intention,
+  **couverture des recherches** (/15), cannibalisation, ouverture du tiroir.
+
+## 9. Tiroir d'une page (fiche, depuis toutes les listes)
+
+Onglets : **L'essentiel**, **Contenu**, **Technique**, **Moteurs IA**, **Positionnement** ; export PDF de la fiche ;
+largeur réglable.
+
+### Onglet Contenu (éditorial)
+1. **En-tête** : problématique de la page (IA), requêtes notées (la plus lourde puis les autres avec leur volume),
+   **rôle et objectif** (modifiables), position Google mesurée, intention de la page comparée à Google.
+2. **Requêtes notées** (`query-set-panel.tsx`) : requête, volume, poids, placement dans la page (couverture /15 et
+   zones manquantes), intention /15 (« À juger » si pas encore jugée), position Google. Cocher, décocher, ajouter
+   (6 au plus), « Voir tous les mots-clés de la page », **Enregistrer**, « Choix automatique ».
+3. **Ré-analyser la page** (un appel IA complet : mots-clés, tri, notation).
+4. **Mots-clés et volumes de recherche** (`keyword-research-panel.tsx`) : chaque mot-clé avec origine (requête cible,
+   mot-clé de l'IA, titres de la page, version courte, idée voisine), avis de l'IA (visée, plus large, hors sujet),
+   volume mensuel, tendance 12 mois, concurrence publicitaire, présence (Title, H1, H2/H3, texte), case **Notée**
+   pour l'ajouter ou le retirer des requêtes notées. Bouton Actualiser (sans IA de notation ; un petit appel pour le
+   tri). Bandeaux bleus : volumes simulés, source absente, actualisation impossible (anciens volumes gardés).
+5. **Réécriture proposée** (`page-rewrite-panel.tsx`) : Title, méta, H1, sous-titres H2 + phrase d'ouverture,
+   sections à ajouter, selon l'objectif de la page ; avant / après, Copier ; **« Requêtes reprises »** sous chaque
+   proposition, les mots s'allument au survol ; noms et chiffres absents de la page signalés en jaune ; longueur du
+   Title et de la méta en orange hors plage ; proposition périmée si contenu, objectif ou requête principale
+   changent.
+6. **Livrables** : Title et méta suggérés par l'analyse.
+7. **Critères du score** (points obtenus / en jeu, constat, « À faire »), **Ce que montre Google**,
+   **Recommandations hors score** (fraîcheur, lisibilité, maillage, expérience vécue…).
+
+### Autres onglets
+- **L'essentiel** : notes des trois piliers, position Google, priorités de la page.
+- **Technique** : critères techniques mesurés de la page, détails (code HTTP, redirections, canonique, images sans
+  alt, liens).
+- **Moteurs IA** : critères GEO (accès des robots IA, citabilité, Schema.org avec JSON-LD suggéré, NAP,
+  sources d'autorité, llms.txt).
+- **Positionnement** : relevés Google de la page (Top 10 classé, concurrents, questions des internautes, avis de
+  l'IA sur les résultats, historique).
+
+## 10. Positionnement (`/projets/[id]/positionnement`)
+
+- **Zones ciblées** (3 par projet, API Géo officielle ; zone propre à une page possible, ville proposée à confirmer).
+- **Visibilité par zone** (pages dédiées, recherches où le site sort, meilleure position, pack local).
+- Avertissement : recherches automatisées contraires aux conditions de Google (profil Chrome dédié, captcha à
+  résoudre soi-même).
+- **Budget** de recherches (par lancement, par jour, utilisées aujourd'hui).
+- Liste des pages (piliers ou toutes) : **Requêtes à mesurer** par page — requêtes notées cochées (« Notée », avec
+  volume), mots-clés de l'IA suggérés par Google proposés non cochés, ajout libre (« + »), 6 cochées au plus ;
+  **Analyser la sélection**, **Reprendre** (recherches en attente ou interrompues).
+- Résultats par page : position, Top 10 (votre site, concurrents, annuaires, sites publics), autres mesures avec
+  « Ajouter aux requêtes notées », avis de l'IA, historique.
+
+## 11. Backlinks (`/projets/[id]/backlinks`)
+
+- Résumé : domaines référents, liens vérifiés, pages du site liées.
+- Évolution depuis l'audit précédent (nouveaux, plus observés).
+- Liste des domaines référents (index Common Crawl) avec la vérification du lien (retrouvé, non vérifié, site
+  injoignable). Hors score.
+
+## 12. GEO (`/projets/[id]/geo`)
+
+- KPI globaux et statut racine (robots.txt pour les robots IA, llms.txt).
+- Tableau des piliers avec leur note GEO et accès au diagnostic de la page (onglet Moteurs IA du tiroir).
 
 ---
 
-## 7. SEO Éditorial (`/projets/[projectId]/seo-editorial` ou `/editorial`)
+## 13. Exports PDF
 
-### Rôle de la page
-Tableau de bord sémantique exploitant les évaluations qualitatives de l'IA sur les pages piliers.
-
-### Éléments et Actions disponibles
-1. **3 KPI's Globaux :**
-   - **Score éditorial moyen (78%) :** Demi-jauge jaune avec note moyenne des pages piliers.
-   - **Cannibalisation détectée (⚠️ 1 Conflit) :** Alerte croisée signalant la concurrence sémantique entre deux URLs du site (ex. `/wine&spirit` vs `/diffusion`).
-   - **Intent Match Global (85%) :** Pourcentage moyen d'adéquation entre le contenu et l'intention de recherche attendue.
-2. **Tableau sémantique comparatif :**
-   - Colonnes : Page Pilier, Mot-clé cible (avec indication italique de l'auto-détection si applicable), Score éditorial, Intent Match (/20), Zones Chaudes (/15), Statut Cannibalisation (pastille verte *« Aucune »* ou rouge *« Conflit avec /url »*).
-   - **Clic sur le nom de la page pilier ou sur l'icône document (`Page Details`) :**
-     - **Action :** Ouvre instantanément le **Tiroir d'inspection** positionné directement sur l'onglet **SEO Éditorial (IA)** de cette page.
-
----
-
-## 8. GEO — Generative Engine Optimization (`/projets/[projectId]/geo`)
-
-### Rôle de la page
-Diagnostic de la visibilité et citabilité du site par les moteurs de réponse à base d'IA générative (Google AI Overviews, Perplexity, SearchGPT).
-
-### Éléments et Actions disponibles
-1. **3 KPI's Globaux :**
-   - **Score GEO Moyen (68%) :** Demi-jauge jaune de performance d'extraction IA.
-   - **Statut /llms.txt :** Indicateur de présence du standard Markdown à la racine du domaine (Badge rouge `Manquant`).
-   - **Citabilité Moyenne (55%) :** Taux de passage ranking prêt à l'extraction accompagné d'un graphique de tendance doré avec point focal.
-2. **Tableau de bord GEO :**
-   - Colonnes : Page Pilier, Score GEO, Accessibilité robots IA (`OUI`/`NON`), Citabilité (`Elevée`/`Moyenne`/`Faible`), Schéma.org (`Présent`/`Manquant`).
-   - **Clic sur la page ou sur l'icône document (`Page Details`) :**
-     - **Action :** Ouvre le **Tiroir d'inspection** positionné directement sur l'onglet **GEO (IA)** de cette page.
-
----
-
-## 9. Le Tiroir Latéral d'Inspection Transversal (`Sheet`)
-
-### Rôle du composant
-Volet coulissant depuis la droite, superposable sans rechargement sur n'importe quel écran, synchronisé avec les query params (`?inspect=[pageId]&tab=[tech|editorial|geo]`).
-
-### Éléments et Actions disponibles
-1. **En-tête et métadonnées de la page :**
-   - Titre H1 de la page, URL absolue avec lien sortant, badges `HTTP 200`, `Index`, `Follow`, `Temps de réponse (0.74 s)`.
-   - **Bouton X :** Ferme le tiroir et nettoie l'URL sans rafraîchissement de page.
-2. **Commutateur des 3 onglets d'inspection :**
-   - `SEO Éditorial [XX%]` | `Technique & Meta [XX%]` | `GEO (IA) [XX%]`
-   - Soulignement jaune dynamique de l'onglet actif.
-3. **Contenu de l'onglet « Technique & Meta » :**
-   - **Bloc Scores :** Demi-jauge SVG et 6 barres de progression (*Meta information*, *Page quality*, *Page structure*, *Links*, *Server*, *External factors*).
-   - **Cadre Priorités (To-Do) :** Alertes bloquantes (ex. *robots.txt mal configuré*) et optimisations recommandées (ex. *temps de réponse TTFB*).
-   - **Accordéons de contrôle :** Checklists avec icônes de succès (cercle vert), avertissement (triangle jaune) et erreur (croix rouge).
-4. **Contenu de l'onglet « SEO Éditorial (IA) » :**
-   - **Bannière de contexte :** Rappelle la requête cible et le modèle utilisé (*Claude 3.5 Sonnet*).
-   - **Bloc Scores & To-Do :** Jauge éditoriale et recommandations prioritaires.
-   - **Encart « Chain of Thought » :** Encadré en italique précédé de l'icône robot, détaillant le raisonnement déductif du LLM avant chaque checklist.
-5. **Contenu de l'onglet « GEO (IA) » :**
-   - **Bannière d'analyse GEO :** Présentation des critères d'extraction pour AI Overviews et Perplexity.
-   - **Jauge & Barres de citabilité :** Mesure des autorisations GPTBot/ClaudeBot, présence de `/llms.txt`, sections autonomes et cohérence NAP.
-   - **Encart de raisonnement IA & Checklists.**
-6. **Protection des coûts API (Pages non-piliers) :**
-   - Si une page inspectée n'a pas été cochée comme page pilier, les onglets Éditorial et GEO affichent un écran de verrouillage informatif avec cadenas, protégeant l'agence contre les appels API non autorisés.
-
----
-
-## 10. Modales transversales
-
-### Modale « + Nouvel Audit »
-- **Champ URL :** Saisie du domaine cible.
-- **Badge doctrine 100% Mobile-First :** Rappel de l'exécution sous User-Agent Googlebot Smartphone.
-- **Bascule « Outrepasser robots.txt » :** Permet d'ignorer les règles anti-crawlers pour les audits de pré-production ou sites protégés.
-- **Bouton « Démarrer l’audit » :** Lance le crawl et referme la modale avec animation de succès.
-
-### Modale « Exporter en PDF »
-- **Récapitulatif de l'export :** Nom du domaine, volume de pages et date.
-- **Bouton « Télécharger le PDF » :** Simule la génération côté serveur et le téléchargement du document prêt pour le client.
+- **Rapport du site** (`report-print-sheet.tsx`) : version client ou complète (résumé, priorités, pages
+  stratégiques, visibilité Google et par zone, popularité, toutes les anomalies, méthode et limites).
+- **Fiche d'une page** (`page-print-sheet.tsx`) : à traiter en priorité, recherche Google, textes prêts à copier,
+  détails techniques.

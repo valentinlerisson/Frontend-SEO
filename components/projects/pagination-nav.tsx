@@ -22,7 +22,7 @@ function visiblePages(page: number, pageCount: number): (number | 'ellipsis')[] 
 }
 
 const navButton =
-  'inline-flex items-center gap-2 rounded-md px-2 py-1 text-xl transition-colors focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed'
+  'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed'
 
 export function PaginationNav({ page, pageCount, onPageChange }: PaginationNavProps) {
   if (pageCount <= 1) return null
@@ -37,13 +37,13 @@ export function PaginationNav({ page, pageCount, onPageChange }: PaginationNavPr
             disabled={page === 1}
             className={cn(navButton, 'text-muted-foreground enabled:hover:text-foreground')}
           >
-            <ChevronLeft className="size-5" aria-hidden="true" />
+            <ChevronLeft className="size-4" aria-hidden="true" />
             Précédent
           </button>
         </li>
         {visiblePages(page, pageCount).map((item, index) =>
           item === 'ellipsis' ? (
-            <li key={`ellipsis-${index}`} aria-hidden="true" className="px-1 text-xl">
+            <li key={`ellipsis-${index}`} aria-hidden="true" className="px-1 text-sm">
               …
             </li>
           ) : (
@@ -72,7 +72,7 @@ export function PaginationNav({ page, pageCount, onPageChange }: PaginationNavPr
             className={cn(navButton, 'text-foreground enabled:hover:text-primary-ink disabled:text-muted-foreground')}
           >
             Suivant
-            <ChevronRight className="size-5" aria-hidden="true" />
+            <ChevronRight className="size-4" aria-hidden="true" />
           </button>
         </li>
       </ul>
