@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuditService } from '@/core/services/audit-service';
-
-const KINDS = ['commune', 'departement', 'region'] as const;
+import { GEO_ZONE_KINDS as KINDS } from '@/core/domain/zones';
 
 /** Zone propre à une page. Corps : { url, zone: { kind, code } | null } (null : retour aux zones du projet) */
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ projectId: string }> }) {

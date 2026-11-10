@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
+import { redirect } from 'next/navigation'
 import { GeoView } from '@/components/audit/geo-view'
+import { GEO_ENABLED } from '@/core/domain/features'
 
 type Props = {
   params: Promise<{ projectId: string }>
@@ -15,5 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function GeoPage({ params }: Props) {
   const { projectId } = await params
+  // GEO mis de côté : l'écran reste dans le code, l'adresse renvoie vers la synthèse
+  if (!GEO_ENABLED) redirect(`/projets/${projectId}/synthese`)
   return <GeoView projectId={projectId} />
 }

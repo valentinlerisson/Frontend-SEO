@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Minus, RefreshCw, TrendingDown, TrendingUp } from 'lucide-react'
 import { useAudit } from '@/components/providers/audit-provider'
+import { MAX_SCORED, useQuerySetToggle } from './use-query-set-toggle'
 import type { KeywordResearch, KeywordRow } from '@/core/domain/keyword-research'
 
 const ORIGIN_LABEL: Record<KeywordRow['origin'], string> = {
@@ -14,9 +15,6 @@ const ORIGIN_LABEL: Record<KeywordRow['origin'], string> = {
 }
 
 const COMPETITION_LABEL = { LOW: 'Faible', MEDIUM: 'Moyenne', HIGH: 'Forte' } as const
-
-/** Requêtes notées choisies à la main, au plus */
-const MAX_SCORED = 6
 
 /** Avis de l'IA : seules les recherches « visées » sont notées d'office */
 const RELEVANCE_LABEL = {
@@ -32,7 +30,7 @@ const PRESENCE: { key: keyof KeywordRow['presence']; label: string }[] = [
   { key: 'text', label: 'Texte' },
 ]
 
-function Trend({ trend }: { trend?: KeywordRow['trend'] }) {
+export function Trend({ trend }: { trend?: KeywordRow['trend'] }) {
   if (trend === 'up') return <TrendingUp className="size-3.5 text-muted-foreground" aria-label="En hausse" />
   if (trend === 'down') return <TrendingDown className="size-3.5 text-muted-foreground" aria-label="En baisse" />
   if (trend === 'flat') return <Minus className="size-3.5 text-muted-foreground" aria-label="Stable" />
@@ -54,42 +52,14 @@ export function KeywordResearchPanel({
   scored?: string[]
 }) {
   const { auditDbId, refreshAudit } = useAudit()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
-  const isScored = (keyword: string) => scored.some((query) => sameText(query, keyword))
-
+  const [running, setRunning] = useState(false)
   // Ajoute ou retire un mot-clé des requêtes notées : la note est recalculée sans l'IA
-  const toggleScored = async (keyword: string) => {
-    if (!auditDbId) return
-    const next = isScored(keyword) ? scored.filter((query) => !sameText(query, keyword)) : [...scored, keyword]
-    if (next.length > MAX_SCORED) {
-      setError(`${MAX_SCORED} requêtes notées au plus : décochez-en une.`)
-      return
-    }
-    setBusy(true)
-    setError(null)
-    try {
-      const res = await fetch(`/api/audits/${auditDbId}/pages/${pageId}/queries`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ queries: next.length > 0 ? next : null }),
-      })
-      if (!res.ok) {
-        const payload = await res.json().catch(() => ({}))
-        throw new Error(payload.error || `Erreur ${res.status}`)
-      }
-      await refreshAudit()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Modification impossible')
-    } finally {
-      setBusy(false)
-    }
-  }
+  const { isScored, toggle: toggleScored, toggling, error, setError } = useQuerySetToggle(pageId, scored)
+  const busy = running || toggling
 
   const run = async () => {
     if (!auditDbId) return
-    setBusy(true)
+    setRunning(true)
     setError(null)
     try {
       const res = await fetch(`/api/audits/${auditDbId}/pages/${pageId}/keywords`, { method: 'POST' })
@@ -101,7 +71,7 @@ export function KeywordResearchPanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Recherche impossible')
     } finally {
-      setBusy(false)
+      setRunning(false)
     }
   }
 

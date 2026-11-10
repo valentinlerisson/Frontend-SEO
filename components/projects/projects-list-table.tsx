@@ -3,6 +3,7 @@ import { ArrowUpRight, RotateCw, Trash2 } from 'lucide-react'
 import { formatRelativeTime, globalScore, isRunning, type Project } from '@/lib/projects'
 import { StatusBadge } from '@/components/dashboard/status-badge'
 import { ScoreValue } from './score-value'
+import { GEO_ENABLED } from '@/core/domain/features'
 
 type ProjectsListTableProps = {
   projects: Project[]
@@ -28,7 +29,7 @@ export function ProjectsListTable({
     'Projet',
     'Statut',
     'Note globale',
-    ...(detailed ? ['Technique', 'Contenu', 'Moteurs IA'] : []),
+    ...(detailed ? ['Technique', 'Contenu', ...(GEO_ENABLED ? ['Moteurs IA'] : [])] : []),
     'Dernier audit',
     'Actions',
   ]
@@ -87,9 +88,11 @@ export function ProjectsListTable({
                       <td className={cell}>
                         <ScoreValue score={project.scores.edito} compact pendingLabel="—" />
                       </td>
-                      <td className={cell}>
-                        <ScoreValue score={project.scores.geo} compact pendingLabel="—" />
-                      </td>
+                      {GEO_ENABLED && (
+                        <td className={cell}>
+                          <ScoreValue score={project.scores.geo} compact pendingLabel="—" />
+                        </td>
+                      )}
                     </>
                   )}
                   <td className={`${cell} whitespace-nowrap text-sm text-muted-foreground`}>

@@ -1,7 +1,7 @@
 import type {
   BacklinkReport,
   CrawlScope,
-  PageGoal,
+  PageFamily,
   PageRole,
   QueryCandidate,
   SearchInsights,
@@ -10,8 +10,36 @@ import type {
 } from '@/core/domain/types'
 import type { GeoZone } from '@/core/domain/zones'
 import type { KeywordResearch } from '@/core/domain/keyword-research'
+import type { KeywordOpportunities } from '@/core/domain/keyword-opportunities'
 import type { PageRewrite } from '@/core/domain/page-rewrite'
 import type { QuerySetMeasure } from '@/core/domain/scoring/query-set'
+import type { CriterionLoss, SiteGain } from '@/core/domain/scoring/score-losses'
+import type { PageHealth, SearchDemand } from '@/adapters/primary/presenters/dashboard-data'
+
+/** Notes d'un audit terminé (null : pilier non noté), pour l'évolution d'un audit à l'autre */
+export type ScorePoint = { date: string; global: number | null; tech: number | null; editorial: number | null; geo: number | null }
+
+/** Données des graphiques de la Synthèse */
+export type DashboardData = {
+  /** Audits terminés du projet, du plus ancien au plus récent (l'audit affiché en dernier) */
+  history: ScorePoint[]
+  /** Gains possibles par critère, du plus fort au plus faible sur la note globale */
+  gains: SiteGain[]
+  /** Pages dont le détail technique est connu, sur les pages comptées dans la moyenne technique */
+  techDetail: { known: number; counted: number }
+  searchDemand?: SearchDemand
+  pageHealth: PageHealth[]
+}
+
+/** Données de l'onglet « L'essentiel » du tiroir d'une page */
+export type PageEssentials = {
+  /** Critères où la page perd des points, ramenés sur la note du pilier, du plus coûteux au moins coûteux */
+  losses: CriterionLoss[]
+  /** Notes de la même adresse à l'audit précédent */
+  previous?: { date: string; tech: number | null; editorial: number | null; geo: number | null }
+  /** Core Web Vitals mesurés (LCP en s, INP en ms, CLS) */
+  cwv?: { lcp?: number; inp?: number; cls?: number }
+}
 
 /** Requête notée, résumée pour les listes */
 export type QuerySetSummary = { query: string; weight: number; volume?: number }
@@ -24,7 +52,8 @@ export type PillarPage = {
   title: string
   targetKeyword: string
   isAutoDetectedKeyword?: boolean
-  editorialScore: number // out of 100
+  /** Note éditoriale sur 100 ; null : page non notée (contact, légale, utilitaire) */
+  editorialScore: number | null
   intentMatchScore: number // out of 20
   hotZonesScore: number // out of 15
   cannibalizationStatus: 'none' | 'partial' | 'conflict'
@@ -47,12 +76,11 @@ export type PillarPage = {
   roleSource: 'manual' | 'ai' | 'auto'
   /** Raison donnée par l'IA quand elle corrige le rôle */
   roleReason?: string
-  /** Objectif de la page (couvrir le sujet, présenter et convaincre, aller droit au but) et son origine */
-  goal: PageGoal
-  goalLabel: string
-  goalSource: 'manual' | 'auto'
-  /** L'analyse de l'IA a été faite sous un autre objectif : relancer l'analyse de la page pour des pistes adaptées */
-  goalStale?: boolean
+  /** Famille de la page, déduite du rôle (informer, présenter, non notée) */
+  family: PageFamily
+  familyLabel: string
+  /** L'analyse de l'IA a été faite sous une autre famille : relancer l'analyse de la page pour une note à jour */
+  familyStale?: boolean
   /** Analyse de la SERP de la requête cible (positionnement mesuré), si elle a été lancée */
   serp?: SerpAnalysis
   /** Relevés de position précédents (conservés d'un audit à l'autre) */
@@ -81,12 +109,11 @@ export type SubpageItem = {
   roleLabel: string
   roleSource: 'manual' | 'ai' | 'auto'
   roleReason?: string
-  /** Objectif de la page (couvrir le sujet, présenter et convaincre, aller droit au but) et son origine */
-  goal: PageGoal
-  goalLabel: string
-  goalSource: 'manual' | 'auto'
-  /** L'analyse de l'IA a été faite sous un autre objectif : relancer l'analyse de la page pour des pistes adaptées */
-  goalStale?: boolean
+  /** Famille de la page, déduite du rôle (informer, présenter, non notée) */
+  family: PageFamily
+  familyLabel: string
+  /** L'analyse de l'IA a été faite sous une autre famille : relancer l'analyse de la page pour une note à jour */
+  familyStale?: boolean
   /** Score technique de la page, sur 100 */
   techScore: number
   /** Analyse de la SERP de la requête de la page, si elle a été lancée (piliers ou non) */
@@ -138,6 +165,8 @@ export type PageDetails = {
   imagesWithoutAlt?: string[]
   /** Chemins des pages explorées qui pointent vers cette page */
   inlinkSources?: string[]
+  /** Titres de la page dans l'ordre (H1 à H6), pour le plan de la réécriture */
+  headings?: { level: number; text: string }[]
 }
 
 /** Balisage Schema.org suggéré pour les signaux E-E-A-T */
@@ -192,6 +221,31 @@ export type EditorialAccordion = {
   action?: string
   /** Bloc sans objet pour cette page : non affiché, l'indice reste réservé */
   hidden?: boolean
+  /** Détail par requête notée, en tableau (une ligne par requête, une colonne par case de grille ou zone) */
+  queries?: QueryMatrixData
+}
+
+/**
+ * Tableau des requêtes notées d'un critère. `source` : cases de la grille de l'IA (intention) ou zones mesurées par
+ * le code (couverture). La note du critère est la moyenne des lignes pondérée par leur poids.
+ */
+export type QueryMatrixData = {
+  source: 'ai' | 'measured'
+  /** `label` : en-tête court ; `full` : libellé complet (infobulle et légende) */
+  columns: { label: string; full: string; max: number }[]
+  rows: {
+    query: string
+    /** Part de la note du critère, de 0 à 1 */
+    weight: number
+    volume?: number
+    /** null : requête pas encore jugée */
+    total: number | null
+    max: number
+    /** earned null : case non jugée ; missing : mots de la requête absents de la zone */
+    cells: { earned: number | null; max: number; missing?: string[] }[]
+  }[]
+  /** Note du critère (moyenne pondérée) */
+  result: { earned: number; max: number }
 }
 
 export type IssuePillar = 'TECH' | 'EDITORIAL' | 'GEO'
@@ -243,6 +297,8 @@ export type GlobalIssue = {
 }
 
 export type InspectionData = {
+  /** Onglet « L'essentiel » : points perdus, notes de l'audit précédent, vitesse */
+  essentials?: PageEssentials
   pageId: string
   title: string
   url: string
@@ -265,7 +321,8 @@ export type InspectionData = {
     }[]
   }
   editorial: {
-    score: number
+    /** Note sur 100 ; null : page non notée (contact, légale, utilitaire), exclue de la note éditoriale */
+    score: number | null
     coverage?: { measured: number; total: number }
     targetKeyword: string
     /** true : requête saisie par l'utilisateur ; false : déduite par l'IA */
@@ -275,10 +332,9 @@ export type InspectionData = {
     roleLabel: string
     roleSource: 'manual' | 'ai' | 'auto'
     roleReason?: string
-    goal: PageGoal
-    goalLabel: string
-    goalSource: 'manual' | 'auto'
-    goalStale?: boolean
+    family: PageFamily
+    familyLabel: string
+    familyStale?: boolean
     /** Moteur ayant produit l'analyse ; HEURISTIC = repli local (clé API absente ou erreur du modèle) */
     engine?: { engine: 'LLM' | 'HEURISTIC'; error?: string }
     /** Données de recherche et livrables prêts à l'emploi (absents en analyse heuristique) */
@@ -302,6 +358,8 @@ export type InspectionData = {
     position?: { badge: string; detail: string; status: 'valid' | 'warning' | 'info'; measuredOn?: string }
     /** Mots-clés de la page, leurs volumes de recherche et où ils figurent */
     keywords?: KeywordResearch
+    /** Recherches hors page proposées par l'IA, volumes Keyword Planner et statut calculé (notées seulement si cochées) */
+    opportunities?: KeywordOpportunities
     /** Requêtes notées et leurs mesures ; `querySetManual` : choisies par l'utilisateur */
     querySet?: QuerySetMeasure[]
     querySetManual?: boolean
@@ -327,6 +385,8 @@ export type InspectionData = {
 }
 
 export type LocalVisibility = {
+  /** Adresse la plus fréquente du site (le siège) : centre proposé du rayon de la carte */
+  headquarters?: { postalCode: string; city: string }
   zones: {
     zone: GeoZone
     /** La zone vient d'une page (zone propre), pas de la liste du projet */
@@ -396,4 +456,6 @@ export type ProjectAuditData = {
   crawlScope?: CrawlScope
   /** Avancement de l'analyse IA des pages stratégiques (annoncé aux lecteurs d'écran) */
   analysis?: { pillarsDone: number; pillarsTotal: number }
+  /** Graphiques de la Synthèse */
+  dashboard?: DashboardData
 }

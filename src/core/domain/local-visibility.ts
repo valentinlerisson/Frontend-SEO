@@ -31,6 +31,8 @@ function addressInZone(zone: GeoZone, address: { postalCode: string; city: strin
     const department = address.postalCode.startsWith('97') ? address.postalCode.slice(0, 3) : address.postalCode.slice(0, 2);
     return department === zone.code || (zone.code.startsWith('2') && /^2[AB]$/i.test(zone.code) && department === '20');
   }
+  // Adresse lue au format français (code postal à 5 chiffres) : dans la zone « France »
+  if (zone.kind === 'pays') return zone.code === 'FR';
   return false;
 }
 
@@ -97,6 +99,15 @@ export interface ZoneMeasures {
   packShown: number;
   packPresent: number;
   packRead: number;
+}
+
+export type ZoneBand = 'top3' | 'top10' | 'top30' | 'absent' | 'unmeasured';
+
+/** Couleur d'une zone sur la carte : meilleure position mesurée (Top 3, 4 à 10, 11 à 30), absente, ou pas mesurée */
+export function zoneBand(measures: ZoneMeasures): ZoneBand {
+  if (measures.measured === 0) return 'unmeasured';
+  if (!measures.best) return 'absent';
+  return measures.best.rank <= 3 ? 'top3' : measures.best.rank <= 10 ? 'top10' : 'top30';
 }
 
 /** Bilan des mesures Google faites depuis une zone, toutes pages confondues */

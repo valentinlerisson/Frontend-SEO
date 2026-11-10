@@ -43,7 +43,7 @@ const CRITERIA: Criterion[] = [
     advice: (e) => e.primaryContentTldr.actionableAdvice,
   },
   {
-    label: 'ce que la page doit faire (couvrir le sujet, convaincre, faire agir, rassurer, raconter)',
+    label: 'la couverture du sujet (page qui informe) ou la crédibilité ou le savoir-faire montrés (page qui présente)',
     key: 'goal',
     legacy: (e) => ({ score: e.semanticDepth.score, max: 20 }),
     advice: (e) => e.semanticDepth.actionableAdvice,

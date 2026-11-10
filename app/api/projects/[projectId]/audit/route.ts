@@ -44,6 +44,22 @@ export async function GET(
 
     const activeAudit = project.audits[0];
 
+    // Audits terminés précédents : évolution des notes, et notes de chaque page à l'audit terminé le plus récent
+    const previousAudits = await prisma.audit.findMany({
+      where: { projectId: project.id, id: { not: activeAudit.id }, status: 'COMPLETED', createdAt: { lt: activeAudit.createdAt } },
+      orderBy: { createdAt: 'desc' },
+      take: 7,
+      select: { id: true, overallScore: true, techScore: true, editorialScore: true, geoScore: true, completedAt: true, createdAt: true },
+    })
+    const round = (value: number | null) => (value === null ? null : Math.round(value))
+    const lastPrevious = previousAudits[0]
+    const previousPages = lastPrevious
+      ? await prisma.page.findMany({
+          where: { auditId: lastPrevious.id },
+          select: { url: true, techScore: true, editorialScore: true, geoScore: true, isPillar: true },
+        })
+      : []
+
     // Transformation stricte via l'Hexagonal Presenter
     const presentedAudit = AuditPresenter.toProjectAuditData(activeAudit as any, {
       id: project.id,
@@ -51,6 +67,17 @@ export async function GET(
       name: project.name,
       zonesRaw: project.zonesRaw,
       pageZonesRaw: project.pageZonesRaw,
+    }, {
+      audits: [...previousAudits].reverse().map((item) => ({
+        date: (item.completedAt ?? item.createdAt).toISOString(),
+        global: round(item.overallScore),
+        tech: round(item.techScore),
+        editorial: round(item.editorialScore),
+        geo: round(item.geoScore),
+      })),
+      ...(lastPrevious
+        ? { previousPages: { date: (lastPrevious.completedAt ?? lastPrevious.createdAt).toISOString(), pages: previousPages } }
+        : {}),
     });
 
     return NextResponse.json({

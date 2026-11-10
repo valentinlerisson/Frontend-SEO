@@ -13,7 +13,7 @@
     --text: #1b1b1f;
     --muted: #5d5d66;
     --border: #e1e1dc;
-    --accent: #7a6c00;
+    --accent: #eab308;
     --accent-bg: #fbf6c9;
     --info: #0b5cad;
     --info-bg: #e3effc;
@@ -54,7 +54,7 @@
   }
 
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+  html { scroll-behavior: smooth; scroll-padding-top: calc(var(--top-h, 61px) + 20px); }
   body {
     margin: 0;
     background: var(--bg);
@@ -92,6 +92,12 @@
   section { padding: 24px 0; }
   h2 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
   h3 { font-size: 18px; margin: 28px 0 10px; }
+  h4 { font-size: 15px; margin: 26px 0 8px; letter-spacing: 0.01em; }
+  td code { font-size: 13px; }
+  /* tableaux « rôle et famille » : plusieurs colonnes de texte, la première étroite, les autres se partagent la largeur */
+  .role-table td.name { width: 17%; }
+  .role-table td.desc, .role-table td.how { width: auto; color: var(--text); }
+  .role-table td.desc { font-size: 14.5px; }
   .section-intro { color: var(--muted); max-width: 820px; margin: 0 0 18px; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 18px 0; }
@@ -112,9 +118,14 @@
   .note strong:first-child { display: block; margin-bottom: 2px; }
   .note ul { margin: 6px 0 0; padding-left: 20px; }
 
+  /* `clip` et non `hidden` : `hidden` ferait du cadre un conteneur de défilement, et l'en-tête collant (`top: var(--top-h)`) se
+     positionnerait par rapport à lui, donc 61 px plus bas, par-dessus les premières lignes */
   .table-wrap {
     background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-    overflow: hidden; box-shadow: var(--shadow);
+    overflow: hidden; overflow: clip; box-shadow: var(--shadow);
+  }
+  @supports not (overflow: clip) {
+    thead th { position: static !important; }
   }
   table { width: 100%; border-collapse: collapse; }
   thead th {
@@ -246,7 +257,7 @@
   tbody tr:hover td { background: var(--surface-2); }
   tbody tr:target td { background: var(--accent-bg); }
   td.name { width: 24%; }
-  thead th { position: sticky; top: 61px; z-index: 2; }
+  thead th { position: sticky; top: var(--top-h, 61px); z-index: 2; }
 
 
   /* ---- Couleurs des sources de données ---- */
@@ -445,7 +456,7 @@
   <!-- ===================================================== PARCOURS -->
   <section id="parcours">
     <h2>Comment s'utilise Auditly</h2>
-    <p class="section-intro">Un audit se déroule en sept étapes. Auditly fait le travail automatique ; vous gardez la main sur ce qui compte : le périmètre, les pages stratégiques, le rôle et l'objectif de chaque page, les recherches mesurées dans Google.</p>
+    <p class="section-intro">Un audit se déroule en sept étapes. Auditly fait le travail automatique ; vous gardez la main sur ce qui compte : le périmètre, les pages stratégiques, le rôle de chaque page, les recherches mesurées dans Google.</p>
 
 
     <figure class="journey-fig" aria-label="Schéma du parcours : sept étapes, ce que vous faites et ce que fait Auditly">
@@ -453,7 +464,7 @@
         <span class="j-corner" aria-hidden="true"></span>
         <span class="j-lane-label you" aria-hidden="true">Vous</span>
         <span class="j-lane-label auto" aria-hidden="true">Auditly</span>
-        <ol style="display:contents"><li class="j-col"><div class="j-head"><span class="n">1</span><strong>Lancer un audit</strong></div><div class="j-cell you"><span class="tag">Vous</span>Saisir le domaine et le périmètre</div><div class="j-cell idle" aria-hidden="true">—</div></li><li class="j-col"><div class="j-head"><span class="n">2</span><strong>Exploration</strong></div><div class="j-cell idle" aria-hidden="true">—</div><div class="j-cell auto"><span class="tag">Auditly</span>Explore les pages, note la technique, lit robots.txt, sitemap et PageSpeed</div></li><li class="j-col"><div class="j-head"><span class="n">3</span><strong>Pages piliers</strong></div><div class="j-cell you"><span class="tag">Vous</span>Cocher 1 à 20 pages, vérifier rôle et objectif</div><div class="j-cell auto"><span class="tag">Auditly</span>Propose un rôle et un objectif</div></li><li class="j-col"><div class="j-head"><span class="n">4</span><strong>Analyse IA</strong></div><div class="j-cell idle" aria-hidden="true">—</div><div class="j-cell auto"><span class="tag">Auditly</span>Volumes Keyword Planner, IA, suggestions Google, notes sur 100</div></li><li class="j-col"><div class="j-head"><span class="n">5</span><strong>Lire</strong></div><div class="j-cell you"><span class="tag">Vous</span>Synthèse, anomalies, tiroir des pages</div><div class="j-cell auto"><span class="tag">Auditly</span>Classe les anomalies par impact</div></li><li class="j-col"><div class="j-head"><span class="n">6</span><strong>Affiner</strong></div><div class="j-cell you"><span class="tag">Vous</span>Requêtes notées, rôle, objectif, mesure Google</div><div class="j-cell auto"><span class="tag">Auditly</span>Recalcule sans relancer l'IA</div></li><li class="j-col"><div class="j-head"><span class="n">7</span><strong>Partager</strong></div><div class="j-cell you"><span class="tag">Vous</span>Exporter en PDF</div><div class="j-cell auto"><span class="tag">Auditly</span>Garde l'historique des positions</div></li></ol>
+        <ol style="display:contents"><li class="j-col"><div class="j-head"><span class="n">1</span><strong>Lancer un audit</strong></div><div class="j-cell you"><span class="tag">Vous</span>Saisir le domaine et le périmètre</div><div class="j-cell idle" aria-hidden="true">—</div></li><li class="j-col"><div class="j-head"><span class="n">2</span><strong>Exploration</strong></div><div class="j-cell idle" aria-hidden="true">—</div><div class="j-cell auto"><span class="tag">Auditly</span>Explore les pages, note la technique, lit robots.txt, sitemap et PageSpeed</div></li><li class="j-col"><div class="j-head"><span class="n">3</span><strong>Pages piliers</strong></div><div class="j-cell you"><span class="tag">Vous</span>Cocher 1 à 20 pages, vérifier le rôle</div><div class="j-cell auto"><span class="tag">Auditly</span>Propose un rôle (la famille en découle)</div></li><li class="j-col"><div class="j-head"><span class="n">4</span><strong>Analyse IA</strong></div><div class="j-cell idle" aria-hidden="true">—</div><div class="j-cell auto"><span class="tag">Auditly</span>Volumes Keyword Planner, IA, suggestions Google, notes sur 100</div></li><li class="j-col"><div class="j-head"><span class="n">5</span><strong>Lire</strong></div><div class="j-cell you"><span class="tag">Vous</span>Synthèse, anomalies, tiroir des pages</div><div class="j-cell auto"><span class="tag">Auditly</span>Classe les anomalies par impact</div></li><li class="j-col"><div class="j-head"><span class="n">6</span><strong>Affiner</strong></div><div class="j-cell you"><span class="tag">Vous</span>Requêtes notées, rôle, mesure Google</div><div class="j-cell auto"><span class="tag">Auditly</span>Recalcule sans relancer l'IA</div></li><li class="j-col"><div class="j-head"><span class="n">7</span><strong>Partager</strong></div><div class="j-cell you"><span class="tag">Vous</span>Exporter en PDF</div><div class="j-cell auto"><span class="tag">Auditly</span>Garde l'historique des positions</div></li></ol>
       </div>
       <div class="j-loop" aria-hidden="true"><span>↺ Après vos corrections : relancer un audit et comparer</span></div>
       <figcaption>En jaune ce que vous faites, en bleu ce que fait Auditly. Seules les étapes 1, 3 et 6 attendent une action de votre part ; l'étape 3 bloque l'analyse tant que vous n'avez pas validé vos pages.</figcaption>
@@ -478,8 +489,8 @@
       <li>
         <h3>Choisir les pages piliers</h3>
         <p class="where">Onglet Sous-pages · état « Pages à choisir »</p>
-        <p class="who you"><b>Vous</b> cochez de 1 à 20 pages stratégiques (réglable dans Paramètres), vérifiez le <em>rôle</em> et l'<em>objectif</em> de chacune, puis « Lancer l'analyse IA ». Aucune requête à saisir : l'IA choisit les mots-clés de chaque page.</p>
-        <p class="who auto"><b>Auditly</b> propose un rôle et un objectif pour chaque page d'après son adresse et son contenu.</p>
+        <p class="who you"><b>Vous</b> cochez de 1 à 20 pages stratégiques (réglable dans Paramètres), vérifiez le <em>rôle</em> de chacune (sa <em>famille</em> en découle), puis « Lancer l'analyse IA ». Aucune requête à saisir : l'IA choisit les mots-clés de chaque page.</p>
+        <p class="who auto"><b>Auditly</b> propose un rôle pour chaque page d'après son adresse et son contenu, et en déduit sa famille : informer, présenter ou non notée.</p>
       </li>
       <li>
         <h3>Analyse par l'IA</h3>
@@ -490,13 +501,13 @@
       <li>
         <h3>Lire les résultats</h3>
         <p class="where">Synthèse · Anomalies · SEO éditorial · GEO · Backlinks</p>
-        <p class="who you"><b>Vous</b> partez de la Synthèse (note, priorités, conseil), ouvrez une anomalie pour savoir quoi corriger, ou une page pour voir son détail dans le tiroir.</p>
+        <p class="who you"><b>Vous</b> partez de la Synthèse (note, phrase à retenir, par où commencer), ouvrez une anomalie pour savoir quoi corriger, ou une page pour voir son détail dans le tiroir.</p>
         <p class="who auto"><b>Auditly</b> classe les anomalies par impact sur la note et affiche en bleu ce qui est une estimation ou une piste.</p>
       </li>
       <li>
         <h3>Affiner</h3>
         <p class="where">Tiroir d'une page · Sous-pages · Positionnement</p>
-        <p class="who you"><b>Vous</b> corrigez le rôle, l'objectif ou la requête d'une page : la note se recalcule tout de suite. Dans Positionnement, vous cochez les pages et les recherches à mesurer, les zones visées, puis lancez la mesure dans Google.</p>
+        <p class="who you"><b>Vous</b> corrigez le rôle ou les requêtes notées d'une page : la note se recalcule tout de suite. « Repartir de zéro » efface l'analyse du contenu d'une page (mots-clés, requêtes choisies, recherches hors page, réécriture) et la relance ; le rôle et les mesures Google sont gardés. Dans Positionnement, vous cochez les pages et les recherches à mesurer, les zones visées, puis lancez la mesure dans Google.</p>
         <p class="who auto"><b>Auditly</b> ne relance l'IA que si nécessaire, et respecte un budget de recherches Google par lancement et par jour.</p>
       </li>
       <li>
@@ -524,9 +535,10 @@
 
     <h3>Où trouver quoi</h3>
     <div class="map">
-      <div class="card"><div class="k">Synthèse</div><p>La note globale, les trois notes, les priorités pour monter dans Google, le conseil de l'analyse, la visibilité locale et la popularité du site.</p></div>
+      <div class="card"><div class="k">Synthèse</div><p>En trois étages : la note globale en anneau avec les deux piliers, la phrase à retenir et trois chiffres clés ; puis « Par où commencer », les critères qui rapportent le plus de points ; puis trois cartes : Google, état des pages, popularité et visibilité locale.</p></div>
       <div class="card"><div class="k">Anomalies</div><p>Tous les problèmes du site, triés par impact. Chaque anomalie s'ouvre avec ses pages concernées et les étapes de correction.</p></div>
-      <div class="card"><div class="k">Sous-pages</div><p>La liste des pages explorées. C'est ici qu'on choisit les piliers, et qu'on règle le rôle et l'objectif de chaque page.</p></div>
+      <div class="card"><div class="k">Plan d'action</div><p>Les corrections à faire, une tâche par anomalie et par page, en trois colonnes : à corriger, en cours, terminée. Les anomalies à fort et moyen impact y arrivent seules. Au prochain audit, une tâche terminée mais encore relevée est signalée, comme une tâche ouverte qui ne l'est plus. La vue « Par anomalie » regroupe les pages d'une même anomalie en une carte, et « Nouvelle tâche » ajoute une tâche libre que l'audit ne vérifie pas.</p></div>
+      <div class="card"><div class="k">Sous-pages</div><p>La liste des pages explorées. C'est ici qu'on choisit les piliers, et qu'on règle le rôle de chaque page (sa famille en découle).</p></div>
       <div class="card"><div class="k">SEO éditorial</div><p>La note de contenu des piliers : problématique, requêtes notées et leurs volumes, réponse à la recherche, pistes, titre et méta suggérés.</p></div>
       <div class="card"><div class="k">Positionnement</div><p>La place des pages dans Google, à la demande : requêtes choisies (les plus recherchées arrivent cochées), zones, concurrents, lecture du Top 10, avis de l'IA.</p></div>
       <div class="card"><div class="k">Backlinks</div><p>Les sites qui font un lien vers le vôtre (hors score), et leur évolution d'un audit à l'autre.</p></div>
@@ -546,6 +558,10 @@
   <section id="principe">
     <h2>Le principe en bref</h2>
     <p class="section-intro">Le score global du site combine trois notes. Chacune est ramenée sur 100.</p>
+
+    <div class="note warn">
+      <strong>GEO mis de côté depuis le 5 novembre 2026.</strong> L'analyse GEO tourne toujours, mais elle n'entre plus dans les notes et n'est plus affichée dans l'application. Le score global combine donc deux notes : technique 53 % et éditorial 47 % (les 40 % et 35 % ci-dessous, ramenés à 100). La note d'une page stratégique est la moyenne de ses notes technique et éditoriale. Le détail GEO plus bas reste valable si elle est réactivée.
+    </div>
 
     <div class="stack" role="img" aria-label="Composition de la note globale : technique 40 %, éditorial 35 %, GEO 25 %">
       <div class="s1">Technique 40 %</div><div class="s2">Éditorial 35 %</div><div class="s3">GEO 25 %</div>
@@ -620,7 +636,7 @@
           <tr>
             <td class="name">Core Web Vitals (LCP, INP, CLS)<br><span class="badge b-score">25 pts</span></td>
             <td class="desc">Vitesse d'affichage, réactivité et stabilité de la page, telles que les vit l'internaute. Google les prend en compte dans l'expérience de page.</td>
-            <td class="how">API Google PageSpeed Insights, en mobile, sur la page d'accueil et les 10 pages les plus liées. Les mesures d'utilisateurs réels sont préférées ; à défaut, une mesure en laboratoire.
+            <td class="how">API Google PageSpeed Insights, en mobile, sur la page d'accueil et les 10 pages les plus liées. Les mesures d'utilisateurs réels sont préférées ; à défaut, une mesure en laboratoire. La même mesure donne une capture de la page (vue mobile, page entière), montrée dans la fiche de la page (Contenu, Réécriture, Page actuelle) sans effet sur la note.
               <ul><li>LCP (affichage du contenu principal) : 10 pts</li><li>INP (réactivité aux clics) : 8 pts</li><li>CLS (stabilité de la mise en page) : 7 pts</li></ul>
               Une mesure absente (page non mesurée, trafic trop faible pour l'INP) est retirée du calcul.</td>
           </tr>
@@ -704,7 +720,7 @@
       <div class="sm-row"><div class="sm-src k-crawl"><span class="kind">Mesuré</span><strong>Robot d'exploration Auditly</strong><small>contenu principal, hors menu et pied de page</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Title, H1, sous-titres, 1 000 premiers mots, auteur, date, longueur des paragraphes</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Couverture des recherches</span><span>Lisibilité</span><span>Auteur, date, sources</span><span>Vérification des extraits</span></div></div>
       <div class="sm-row"><div class="sm-src k-google"><span class="kind">Google</span><strong>Google Ads Keyword Planner</strong><small>API officielle, France, français</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Volume mensuel, tendance sur 12 mois, idées voisines</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Requêtes notées et leur poids</span><span>Mots-clés et volumes</span></div></div>
       <div class="sm-row"><div class="sm-src k-google"><span class="kind">Google</span><strong>Google Autocomplete</strong><small>suggestions publiques de la barre de recherche</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Vraies recherches proches de la page</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Confirmation des requêtes</span><span>Intention de Google</span><span>Questions des internautes</span></div></div>
-      <div class="sm-row"><div class="sm-src k-ia"><span class="kind">IA</span><strong>Modèle de langage (IA)</strong><small>grilles à cases fixes, extraits copiés mot pour mot</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Problématique et mots-clés de départ, tri des mots-clés, réponses oui / non aux grilles, extraits, réécriture</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Mots-clés envoyés à Keyword Planner</span><span>Tri des mots-clés (visé, plus large, hors sujet)</span><span>Intention</span><span>Début de page</span><span>Objectif de la page</span><span>Qualité du contenu</span><span>Réécriture proposée</span></div></div>
+      <div class="sm-row"><div class="sm-src k-ia"><span class="kind">IA</span><strong>Modèle de langage (IA)</strong><small>grilles à cases fixes, extraits copiés mot pour mot</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Problématique et mots-clés de départ, tri des mots-clés, réponses oui / non aux grilles, extraits, réécriture</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Mots-clés envoyés à Keyword Planner</span><span>Tri des mots-clés (visé, plus large, hors sujet)</span><span>Intention</span><span>Début de page</span><span>Couverture ou présentation</span><span>Qualité du contenu</span><span>Réécriture proposée</span></div></div>
       <div class="sm-row"><div class="sm-src k-google"><span class="kind">Google</span><strong>Résultats Google mesurés</strong><small>onglet Positionnement, à la demande</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Pages du site présentes dans les résultats de chaque requête</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Concurrence entre vos pages</span><span>Confirmation des requêtes</span></div></div>
       <div class="sm-sink">Tout converge vers <b>la note éditoriale sur 100</b> des pages piliers, moyenne des requêtes notées</div>
     </figure>
@@ -716,7 +732,7 @@
     </div>
 
     <div class="note warn">
-      <strong>Requêtes notées.</strong> Une page n'est plus notée sur une seule recherche mais sur 4 au plus : les plus tapées selon Google Keyword Planner, chacune pesant selon son volume (50 % au plus, pour qu'une recherche très générale n'écrase pas les autres). Sans volume connu, ce sont les 3 premiers mots-clés choisis par l'IA, à poids égal ; des volumes simulés ne servent jamais à noter. L'intention, la couverture et la concurrence entre pages sont jugées pour chaque requête, puis moyennées. Vous pouvez cocher, décocher ou ajouter une requête dans la fiche de la page ; les mêmes requêtes arrivent cochées dans Positionnement.
+      <strong>Requêtes notées.</strong> Une page n'est plus notée sur une seule recherche mais sur 4 au plus : les plus tapées selon Google Keyword Planner, chacune pesant selon son volume (50 % au plus, pour qu'une recherche très générale n'écrase pas les autres). Sans volume connu, ce sont les 3 premiers mots-clés choisis par l'IA, à poids égal, sauf ceux dont Keyword Planner sait qu'ils font moins de 20 recherches par mois ; des volumes simulés ne servent jamais à noter. Les recherches hors page ne comptent que si vous les cochez. L'intention, la couverture et la concurrence entre pages sont jugées pour chaque requête, puis moyennées. Vous pouvez cocher, décocher ou ajouter une requête dans la fiche de la page ; les mêmes requêtes arrivent cochées dans Positionnement.
       Les mots-clés de départ sont conservés d'un audit à l'autre tant que le Title, le H1 et les sous-titres ne changent pas, pour que les résultats restent comparables.
     </div>
 
@@ -732,8 +748,8 @@
           <tr>
             <td class="name">Cannibalisation<br><span class="badge b-score">10 pts</span></td>
             <td class="desc">Deux pages du même site qui visent la même recherche se font concurrence, et Google hésite entre elles.</td>
-            <td class="how"><span class="src">Google</span> Quand les résultats Google de la requête ont été lus : seule la page auditée sort, 10 pts ; deux pages du site, 5 ; trois ou plus, 3 ; une autre page du site sort à la place de celle-ci, 5 pts et alerte. Poids réduit : sur les sites audités, ce critère était presque toujours au maximum et ne départageait pas les pages. Si le site n'apparaît pas du tout, rien n'est mesurable.
-              <br><span class="src">IA</span> Sinon, et dans ce dernier cas, estimation de l'IA à partir des adresses et des titres des autres pages piliers.</td>
+            <td class="how"><span class="src">Google</span> <strong>Notée seulement quand elle est mesurée</strong> dans les résultats Google de la requête : seule la page auditée sort, 10 pts ; deux pages du site, 5 ; trois ou plus, 2 à 3 ; une autre page du site sort à la place de celle-ci, 5 pts et alerte. Si le site n'apparaît pas du tout, rien n'est mesurable.
+              <br><span class="src">IA</span> Sinon, estimation de l'IA à partir des adresses et des titres des autres pages piliers, affichée en bleu <strong>hors note</strong> (depuis le 09/11/2026 : sur big-happy.fr, les 6 pages étaient estimées, dont 5 au maximum ; le critère ne départageait rien).</td>
           </tr>
           <tr>
             <td class="name">Couverture des recherches<br><span class="badge b-score">15 pts</span></td>
@@ -741,14 +757,14 @@
             <td class="how"><span class="src">Mesuré</span> Pour chaque requête notée : part de ses mots présents dans le Title (6 pts), les 100 premiers mots (5 pts) et les sous-titres H2/H3 (4 pts), au prorata. La note est la moyenne des requêtes, pondérée par leur volume. Répéter un mot-clé ne rapporte rien. Comparaison sans majuscules, accents ni pluriel. Limite : un synonyme ne compte pas.</td>
           </tr>
           <tr>
-            <td class="name">Réponse directe ou proposition de valeur<br><span class="badge b-score">10 pts</span></td>
+            <td class="name">Réponse directe ou proposition claire<br><span class="badge b-score">10 pts</span></td>
             <td class="desc">L'internaute pressé doit trouver tout de suite ce qu'il cherche.</td>
-            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> Grille à cases. Pour un article ou un contenu informatif : réponse ou résumé dans l'introduction (4), réponse qui se suffit (3), réponse précise (3). Pour les autres pages : ce qui est proposé et pour qui dès l'introduction (4), ce qui distingue l'organisation (3), action visible dès l'arrivée (3). La première case n'est cochée que si la phrase citée par l'IA figure vraiment dans les 150 premiers mots de la page.</td>
+            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> Grille à cases. Pour un article ou un contenu informatif : réponse ou résumé dans l'introduction (4), réponse qui se suffit (3), réponse précise (3). Pour une page qui présente : ce qui est proposé et pour qui dès l'introduction (6), introduction précise : prestation, public, lieu ou chiffre nommés (4). La case de l'introduction n'est cochée que si la phrase citée par l'IA figure vraiment dans les 150 premiers mots de la page. L'action visible n'est plus notée (conversion, pas classement).</td>
           </tr>
           <tr>
-            <td class="name">Critère de l'objectif (couverture du sujet, conviction…)<br><span class="badge b-score">20 pts</span></td>
-            <td class="desc">Ce que la page doit faire, selon son objectif : couvrir son sujet, convaincre, faire agir, rassurer ou raconter une réalisation.</td>
-            <td class="how"><span class="src">IA</span> Grille à cases propre à chaque <a href="#objectif-page">objectif</a>. Pour « Couvrir le sujet » : notions centrales traitées (6), questions des internautes traitées (5), notions expliquées et mises en contexte (5), exemples (4). Les notions manquantes sont présentées comme des pistes, pas comme des erreurs.</td>
+            <td class="name">Critère « sujet » (couverture ou présentation)<br><span class="badge b-score">20 pts</span></td>
+            <td class="desc">Ce que la page doit faire, selon sa <a href="#famille-page">famille</a> : couvrir son sujet (page qui informe) ou présenter une offre avec ses preuves (page qui présente).</td>
+            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> Grille à cases. Page qui informe : notions centrales traitées (6), questions des internautes traitées (5), notions expliquées et mises en contexte (5), exemples (4). Page institutionnelle, grille « Crédibilité » : preuve concrète (7, phrase copiée par l'IA et retrouvée mot pour mot dans la page), ce qui distingue l'organisation (5), qui est derrière : dirigeants, équipe ou experts nommés (4), repères de solidité : ancienneté, taille, implantations (4). Autres pages qui présentent, grille « Savoir-faire » : preuve concrète (7), ce qui distingue l'approche (5), ce qui est fait et comment (4), à qui et à quels besoins ça répond (4). Aucune case ne juge la vente (prix, modalités, bouton d'action : conseils hors note). Les manques sont présentés comme des pistes, pas comme des erreurs.</td>
           </tr>
           <tr>
             <td class="name">Signaux de confiance E-E-A-T<br><span class="badge b-score">10 pts · articles</span></td>
@@ -768,12 +784,17 @@
           <tr>
             <td class="name">Présentation de la page dans l'onglet<br><span class="badge b-off">Hors score</span></td>
             <td class="desc">Comprendre d'un coup d'œil d'où vient la note et quoi faire en premier.</td>
-            <td class="how">Le tiroir d'une page s'ouvre sur « L'essentiel » (notes des trois piliers, position Google, priorités), puis Contenu, Technique, Moteurs IA et Positionnement. Dans Contenu, trois groupes : « Critères du score » (points obtenus sur points en jeu, constat en une phrase, action « À faire »), « Ce que montre Google » et « Recommandations hors score ». Les critères sans objet pour le rôle de la page sont masqués, et la note indique sur combien de points elle a été calculée. Chaque constat porte sa source : Mesuré, Google ou Estimation IA.</td>
+            <td class="how">Le tiroir d'une page s'ouvre sur « L'essentiel » (notes des trois piliers, position Google, priorités), puis Contenu, Technique, Moteurs IA et Positionnement. Dans Contenu, trois groupes : « Critères du score » (points obtenus sur points en jeu, constat en une phrase, action « À faire »), « Ce que montre Google » et « Indications hors note » (en texte, sans pastille de couleur : rien n'y retire de points). Intention et couverture des recherches s'affichent en tableau, une ligne par requête notée : cases de l'IA (oui / non) ou points de chaque zone avec les mots absents. Les critères sans objet pour le rôle de la page sont masqués, et la note indique sur combien de points elle a été calculée. Chaque constat porte sa source : Mesuré, Google ou Estimation IA.</td>
+          </tr>
+          <tr>
+            <td class="name">Graphiques de la Synthèse et de « L'essentiel »<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Voir d'un coup d'œil où en est le site ou la page, ce qui rapporte le plus de points et la place dans Google.</td>
+            <td class="how"><span class="src">Mesuré</span><span class="src">Google</span> Chaque critère montre les points qu'il fait perdre, sur la note de la page ou, pour le site, ce qu'il rapporterait s'il était parfait partout (estimation en points de la note globale). La demande de recherche des pages stratégiques est répartie selon la position mesurée dans Google. Les notes sont comparées à l'audit précédent, avec une mini-courbe de leur évolution. Chaque titre dit la conclusion et chaque graphique a une légende chiffrée ; les couleurs ont été vérifiées pour rester lisibles en mode sombre et par les daltoniens, et un état n'est jamais indiqué par la couleur seule.</td>
           </tr>
           <tr>
             <td class="name">Réécriture proposée<br><span class="badge b-off">Hors score</span></td>
             <td class="desc">Donner des titres et des débuts de section prêts à relire, adaptés à ce que la page doit faire.</td>
-            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> À la demande, l'IA propose un Title, une méta description, un H1, des sous-titres avec une ou deux phrases d'ouverture, et au plus 3 sections à ajouter. Elle suit une fiche propre à l'objectif de la page : un guide répond aux questions, une page d'offre présente et prouve sans tourner au cours, une page « à propos » rassure. Elle n'ajoute aucun fait : une information manquante est laissée en « [À COMPLÉTER] ». Le code garde seulement les sous-titres réellement présents et signale en jaune tout nom ou chiffre absent de la page. Chaque proposition se copie d'un clic.</td>
+            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> À la demande, l'IA propose un Title, une méta description, un H1, des sous-titres avec une ou deux phrases d'ouverture, et au plus 3 sections à ajouter. Elle suit une fiche propre au rôle de la page : un guide répond aux questions, une page d'offre présente et prouve sans tourner au cours, une page « à propos » rassure. Elle n'ajoute aucun fait : une information manquante est laissée en « [À COMPLÉTER] ». Le code garde seulement les sous-titres réellement présents et signale en jaune tout nom ou chiffre absent de la page. Chaque proposition se copie d'un clic. Elle est rédigée avec les requêtes notées (cochées) de la page : c'est là que se trouvent le Title et la méta prêts à copier. Si les requêtes cochées changent, la proposition est signalée comme dépassée.</td>
           </tr>
           <tr>
             <td class="name">Mots-clés et volumes de recherche<br><span class="badge b-off">Hors score</span></td>
@@ -781,9 +802,14 @@
             <td class="how"><span class="src">Mesuré</span><span class="src">Google</span> Les mots-clés de départ sont choisis par l'IA en lisant la page, complétés par le Title, le H1 et les sous-titres, sans marque ni lieu. Google Keyword Planner donne le volume mensuel, la tendance sur 12 mois, la concurrence des annonces et des idées voisines. Le code repère où chaque mot-clé figure : Title, H1, sous-titres, texte. Les 3 meilleurs volumes arrivent cochés dans Positionnement. Une idée voisine doit partager au moins deux mots avec la page, et les variantes que Google compte comme une seule recherche ne sont gardées qu'une fois. Des volumes inventés restent disponibles pour tester l'écran sans accès : ils sont alors marqués « simulés », en bleu.</td>
           </tr>
           <tr>
+            <td class="name">Recherches hors page<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">Quand le contenu d'une page ne donne pas de bonnes recherches à viser, trouver celles que les internautes tapent vraiment, même absentes de la page, et savoir si la page peut les porter.</td>
+            <td class="how"><span class="src">IA</span><span class="src">Google</span><span class="src">Mesuré</span> À la demande (bouton dans la fiche de la page, un appel à l'IA). L'IA part des idées de Google Keyword Planner, des suggestions Google, des résultats Google déjà relevés et des pages du site, et propose jusqu'à 20 recherches, même si la page ne les emploie pas. Keyword Planner donne leur volume. Le code donne ensuite un statut, sans avis de l'IA : <em>intégrable</em> (tous ses mots sont déjà dans la page), <em>à confirmer</em> (des mots manquent, par exemple « homme » ou « 2026 » : à cocher seulement si c'est vrai), <em>autre page</em> (une autre page du site porte ce sujet), <em>hors offre</em> (produit que le site ne propose pas) ou <em>écartée</em> (moins de 20 recherches par mois, ou marque d'un tiers repérée dans les résultats Google). Une recherche qui partage moins de deux mots avec la requête visée est signalée <em>plus large</em> : volume souvent fort, mais la page y répond moins bien. Le pic saisonnier (mois le plus fort comparé à la moyenne) est indiqué. Rien n'entre dans la note sans case cochée. Exemple du 05/11/2026, fiche « Veste Maroc » de goflexworld.com : « veste maroc noir », 320 recherches par mois, intégrable ; « veste maroc puma » écartée (marque d'un tiers).</td>
+          </tr>
+          <tr>
             <td class="name">Title et méta suggérés<br><span class="badge b-off">Hors score</span></td>
             <td class="desc">Rendre le résultat Google plus clair et plus attirant.</td>
-            <td class="how"><span class="src">IA</span> Proposition de Title (45 à 60 caractères) et de méta description (130 à 155), en signalant tout mot qui n'apparaît pas dans la page, pour ne rien promettre de faux.</td>
+            <td class="how"><span class="src">IA</span> Rédigés seulement quand on clique sur « Proposer une réécriture », avec les requêtes notées de la page : Title de 45 à 60 caractères, méta description de 130 à 155. Tout nom ou chiffre absent de la page est signalé, pour ne rien promettre de faux. L'analyse de la page n'en propose plus d'office.</td>
           </tr>
           <tr>
             <td class="name">Lisibilité<br><span class="badge b-score">5 pts</span></td>
@@ -793,12 +819,12 @@
           <tr>
             <td class="name">Liens dans le texte, fraîcheur<br><span class="badge b-off">Hors score</span></td>
             <td class="desc">Liens utiles vers le reste du site, contenu à jour.</td>
-            <td class="how"><span class="src">Mesuré</span> Liens au libellé vague (« en savoir plus »), années dépassées dans le texte.</td>
+            <td class="how"><span class="src">Mesuré</span> Liens au libellé vague (« en savoir plus »), années dépassées dans le texte. Une année qui date un début (« depuis 2019 », « fondée en 1998 ») n'est pas signalée.</td>
           </tr>
           <tr>
             <td class="name">Qualité du contenu<br><span class="badge b-score">15 pts · couvrir le sujet</span></td>
             <td class="desc">Google valorise le vécu de l'auteur et ce qu'une page apporte de plus qu'un texte générique.</td>
-            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> L'IA copie des extraits de la page ; le code ne compte que ceux qu'il retrouve mot pour mot. Expérience vécue (3 pts pour un extrait, 5 pour deux), donnée ou méthode propre (4 pts), cas concret (4 pts), limite reconnue (2 pts). Notée seulement pour les pages qui doivent couvrir leur sujet : pour une page de présentation, les preuves sont déjà jugées par le critère de son objectif, elle ne doit pas être pénalisée deux fois. Ailleurs, le bloc reste un conseil hors score.</td>
+            <td class="how"><span class="src">IA</span><span class="src">Mesuré</span> L'IA copie des extraits de la page ; le code ne compte que ceux qu'il retrouve mot pour mot. Expérience vécue (3 pts pour un extrait, 5 pour deux), donnée ou méthode propre (4 pts), cas concret (4 pts), limite reconnue (2 pts). Notée seulement pour les pages qui informent : pour une page qui présente, la preuve est déjà jugée dans « Présentation et preuves », elle ne doit pas être pénalisée deux fois. Ailleurs, le bloc reste un conseil hors score.</td>
           </tr>
           <tr>
             <td class="name">Cohérence du site<br><span class="badge b-off">Hors score</span></td>
@@ -809,85 +835,144 @@
       </table>
     </div>
 
-    <h3 id="objectif-page">Objectif de la page</h3>
-    <p class="section-intro">Une page simple n'est pas une page incomplète. Chaque page a un objectif, déduit de son rôle et modifiable à côté du rôle, qui l'est aussi (onglet Sous-pages, colonne « Rôle et objectif », ou bloc « Rôle et objectif » du tiroir). Les objectifs valent pour tout type de site : entreprise, association, collectivité, média, site juridique ou informatif. Il décide ce que valent les 20 points de « Couverture du sujet » et quelles pistes sont proposées.</p>
+    <h3 id="famille-page">Famille de la page</h3>
+    <p class="section-intro">Une page simple n'est pas une page incomplète. Chaque page a une famille, déduite de son rôle : on ne la choisit pas, on corrige le rôle si besoin (onglet Sous-pages, colonne « Rôle et famille », ou tiroir de la page). Elle décide ce que valent les 20 points du critère « sujet », si la qualité du contenu est notée, et si la page compte dans la note éditoriale du site. Depuis le 09/11/2026, ces trois familles remplacent les six objectifs choisis à la main.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Objectif</th><th>Pages concernées par défaut</th><th>Ce qui est jugé (20 pts)</th><th>Pistes proposées</th></tr></thead>
+        <thead><tr><th>Famille</th><th>Pages concernées</th><th>Ce qui est jugé (20 pts)</th><th>Pistes proposées</th></tr></thead>
         <tbody>
           <tr>
-            <td class="name">Couvrir le sujet</td>
+            <td class="name">Informer</td>
             <td class="desc">Article, contenu informatif (guide, FAQ).</td>
-            <td class="how">Notions centrales (6), questions des internautes (5), notions expliquées (5), exemples (4).</td>
+            <td class="how">Couverture du sujet : notions centrales (6), questions des internautes (5), notions expliquées (5), exemples (4). Qualité du contenu (15 pts) notée en plus.</td>
             <td class="how">Notions et sections à envisager, sections traitées par les concurrents.</td>
           </tr>
           <tr>
-            <td class="name">Présenter et convaincre</td>
-            <td class="desc">Accueil, offre, liste.</td>
-            <td class="how">Ce qui est proposé et à qui (5), au moins une preuve concrète : chiffre, référence nommée, agrément (6), ce qui distingue de la concurrence (4), façon de passer à l'action (5).</td>
-            <td class="how">Jusqu'à 4 pistes pour convaincre.</td>
+            <td class="name">Présenter</td>
+            <td class="desc">Accueil, offre, liste, page institutionnelle, réalisation.</td>
+            <td class="how">Page institutionnelle, « Crédibilité » : preuve concrète vérifiée dans la page (7), ce qui distingue (5), qui est derrière (4), repères de solidité (4). Autres pages, « Savoir-faire » : preuve concrète vérifiée (7), ce qui distingue l'approche (5), ce qui est fait et comment (4), besoins traités (4).</td>
+            <td class="how">Jusqu'à 4 pistes, dont une éventuelle piste pour faciliter l'action (hors note). L'IA n'invente jamais un agrément, un chiffre ou une référence.</td>
           </tr>
           <tr>
-            <td class="name">Convertir</td>
-            <td class="desc">Page à but unique : demande de devis, achat, inscription, don, rendez-vous, adhésion.</td>
-            <td class="how">Action visible dès l'arrivée (5), reprise plus bas (4), étape suivante annoncée (4), freins levés : prix, garanties, questions (4), un seul chemin principal (3).</td>
-            <td class="how">Jusqu'à 4 pistes pour faciliter l'action.</td>
-          </tr>
-          <tr>
-            <td class="name">Rassurer</td>
-            <td class="desc">Page institutionnelle (à propos, équipe, agréments, références).</td>
-            <td class="how">Structure identifiée (5), personnes nommées (4), preuves vérifiables : agréments, labels, chiffres datés (6), engagements concrets (3), coordonnées (2).</td>
-            <td class="how">Jusqu'à 4 pistes pour rassurer. L'IA n'invente jamais un agrément ou un chiffre.</td>
-          </tr>
-          <tr>
-            <td class="name">Raconter une réalisation</td>
-            <td class="desc">Étude de cas, projet, portfolio, programme.</td>
-            <td class="how">Contexte posé (5), ce qui a été fait (5), résultat concret (6), une suite : témoignage, enseignement, lien (4).</td>
-            <td class="how">Jusqu'à 4 pistes pour mieux raconter.</td>
-          </tr>
-          <tr>
-            <td class="name">Aller droit au but</td>
-            <td class="desc">Contact, page utilitaire ou légale, page courte voulue.</td>
-            <td class="how">Rien : les 20 points sortent du calcul, la note se calcule sur les autres critères, dont la lisibilité si elle est mesurable.</td>
+            <td class="name">Non notée</td>
+            <td class="desc">Contact, mentions légales, plan du site, page utilitaire.</td>
+            <td class="how">Rien : la page sort de la note éditoriale du site. Ses constats (intention, début de page, lisibilité, ancrage local…) restent affichés, sans points.</td>
             <td class="how">Aucune notion ni section à ajouter.</td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div class="note">Les pistes sont toujours en information bleue, jamais des erreurs, et jamais un cours, une définition générale ni un guide à télécharger. Changer l'objectif recalcule la note. L'IA relit la page seulement si elle l'avait jugée sous un autre objectif (un seul appel). Une analyse faite sous un autre objectif est signalée en bleu : relancer l'analyse de la page donne des pistes adaptées.</div>
+    <div class="note">Les pistes sont toujours en information bleue, jamais des erreurs, et jamais un cours, une définition générale ni un guide à télécharger. Changer le rôle recalcule la note ; si la famille change (informer ou présenter), l'IA relit la page (un seul appel). Une analyse faite avant les familles est signalée en bleu : sa note reste provisoire jusqu'à la prochaine analyse.</div>
 
-    <h3 id="points-role">Points éditoriaux selon le rôle et l'objectif</h3>
-    <p class="section-intro">Le barème vaut 100 points au total. Les critères sans objet pour une page sortent du calcul au lieu de compter zéro, et la note reste ramenée sur 100 ; le tiroir indique sur combien de points elle a été calculée. Les critères jugés par l'IA (intention, début de page, objectif) sont des grilles à cases : l'IA répond oui ou non, le code additionne.</p>
+    <h3 id="points-role">Points éditoriaux selon la famille</h3>
+    <p class="section-intro">Le barème vaut 100 points au total. Les critères sans objet ou non mesurés pour une page sortent du calcul au lieu de compter zéro, et la note reste ramenée sur 100 ; le tiroir indique sur combien de points elle a été calculée. Les critères jugés par l'IA (intention, début de page, sujet) sont des grilles à cases : l'IA répond oui ou non, le code additionne.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Critère</th><th>Points</th><th>Retenu pour</th></tr></thead>
         <tbody>
-          <tr><td class="name">Intention de recherche</td><td class="desc">15</td><td class="how">Toutes les pages, sauf requête générique non confirmée par Google.</td></tr>
-          <tr><td class="name">Cannibalisation</td><td class="desc">10</td><td class="how">Toutes les pages.</td></tr>
-          <tr><td class="name">Couverture des recherches</td><td class="desc">15</td><td class="how">Toutes les pages, sauf requête générique non confirmée par Google.</td></tr>
-          <tr><td class="name">Réponse directe ou proposition de valeur</td><td class="desc">10</td><td class="how">Toutes les pages.</td></tr>
-          <tr><td class="name">Critère de l'objectif</td><td class="desc">20</td><td class="how">Tous les objectifs sauf « Aller droit au but ».</td></tr>
+          <tr><td class="name">Intention de recherche</td><td class="desc">15</td><td class="how">Toutes les pages notées.</td></tr>
+          <tr><td class="name">Cannibalisation</td><td class="desc">10</td><td class="how">Seulement quand elle est mesurée dans Google.</td></tr>
+          <tr><td class="name">Couverture des recherches</td><td class="desc">15</td><td class="how">Toutes les pages notées.</td></tr>
+          <tr><td class="name">Réponse directe ou proposition claire</td><td class="desc">10</td><td class="how">Toutes les pages notées.</td></tr>
+          <tr><td class="name">Critère « sujet »</td><td class="desc">20</td><td class="how">Couverture du sujet (informer) ou présentation et preuves (présenter).</td></tr>
           <tr><td class="name">Auteur, date et sources</td><td class="desc">10</td><td class="how">Articles seulement.</td></tr>
-          <tr><td class="name">Qualité du contenu</td><td class="desc">15</td><td class="how">Objectif « Couvrir le sujet » seulement.</td></tr>
-          <tr><td class="name">Lisibilité</td><td class="desc">5</td><td class="how">Toutes les pages assez longues pour une mesure fiable.</td></tr>
+          <tr><td class="name">Qualité du contenu</td><td class="desc">15</td><td class="how">Famille « informer » seulement.</td></tr>
+          <tr><td class="name">Lisibilité</td><td class="desc">5</td><td class="how">Toutes les pages notées assez longues pour une mesure fiable.</td></tr>
         </tbody>
       </table>
     </div>
     <div class="note info">
-      <strong>Exemples de points en jeu</strong>
+      <strong>Exemples de points en jeu</strong> (10 de plus quand la cannibalisation est mesurée)
       <ul>
-        <li>Article : 100 points.</li>
-        <li>Guide ou FAQ (couvrir le sujet) : 90 points.</li>
-        <li>Offre, accueil, page institutionnelle (convaincre, rassurer, faire agir, raconter) : 75 points.</li>
-        <li>Contact ou page utilitaire (aller droit au but) : 55 points.</li>
-        <li>Analyse antérieure au groupe de requêtes notées, avec une requête seulement déduite : 30 points de moins (intention et couverture). Les pages ré-analysées depuis ne sont plus concernées : leurs requêtes viennent de Keyword Planner ou des mots-clés que l'IA tire du contenu.</li>
+        <li>Article : 90 points.</li>
+        <li>Guide ou FAQ : 80 points.</li>
+        <li>Accueil, offre, liste, page institutionnelle, réalisation : 65 points.</li>
+        <li>Contact, page légale ou utilitaire : non notée, hors de la note éditoriale du site.</li>
       </ul>
+    </div>
+
+    <h3 id="role-famille">Rôle et famille d'une page : effets et critères</h3>
+    <p class="section-intro">Chaque page pilier porte un <strong>rôle</strong> (9 possibles, détecté) et une <strong>famille</strong> qui en découle (3). Seul le rôle se modifie, dans l'onglet Sous-pages (colonne « Rôle et famille ») et dans le tiroir (onglet Contenu). Code : <code>scoring/page-role.ts</code>, <code>scoring/page-family.ts</code>, <code>scoring/editorial-checks.ts</code>, <code>EditorialScoringEngine</code>.</p>
+    <div class="table-wrap">
+      <table class="role-table">
+        <thead><tr><th>Quoi</th><th>Règle</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Rôle retenu</td><td class="desc">correction manuelle, puis avis de l'IA (s'il diffère de la détection), puis détection automatique (<code>resolvePageRole</code>).</td></tr>
+          <tr><td class="name">Famille</td><td class="desc">déduite du rôle (<code>familyOf</code>) : article et contenu informatif → informer ; contact et utilitaire → non notée ; les autres → présenter.</td></tr>
+          <tr><td class="name">Changement de rôle</td><td class="desc">la note est recalculée sans appel à l'IA ; si la grille du critère « sujet » ne correspond plus à la nouvelle famille, l'analyse de la page est relancée (un appel).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h4>Les neuf rôles : ce qu'ils déclenchent</h4>
+    <div class="table-wrap">
+      <table class="role-table">
+        <thead><tr><th>Rôle</th><th>Famille</th><th>Début de page jugé comme</th><th>Auteur, date, sources (10 pts)</th><th>Autres effets</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Accueil</td><td class="desc">Présenter</td><td class="how">Proposition claire</td><td class="how">Non</td><td class="how">Compte parmi les rôles à faible enjeu de classement (alerte de sélection des piliers).</td></tr>
+          <tr><td class="name">Marque / institutionnelle</td><td class="desc">Présenter</td><td class="how">Proposition claire</td><td class="how">Non</td><td class="how">Pas de sections estimées ni de notions à envisager. Compte dans l'alerte des piliers. Reçoit des requêtes candidates génériques.</td></tr>
+          <tr><td class="name">Contact</td><td class="desc">Non notée</td><td class="how">Proposition claire (affichée, hors note)</td><td class="how">Non</td><td class="how">Requête de marque seule (nom du site), ni candidates ni suggestions Google, sauf requête saisie. Pas d'expérience vécue ni de gain d'information. Compte dans l'alerte des piliers.</td></tr>
+          <tr><td class="name">Offre / service</td><td class="desc">Présenter</td><td class="how">Proposition claire</td><td class="how">Non</td><td class="how">Diagnostic « expérience vécue ».</td></tr>
+          <tr><td class="name">Réalisation / étude de cas</td><td class="desc">Présenter</td><td class="how">Proposition claire</td><td class="how">Non</td><td class="how">Diagnostic « expérience vécue ».</td></tr>
+          <tr><td class="name">Article (daté, signé)</td><td class="desc">Informer</td><td class="how">Réponse directe ou résumé</td><td class="how"><strong>Oui</strong></td><td class="how">Diagnostic « expérience vécue » ; « limites et contraintes évoquées » demandé aux articles seulement.</td></tr>
+          <tr><td class="name">Contenu informatif (guide, FAQ)</td><td class="desc">Informer</td><td class="how">Réponse directe ou résumé</td><td class="how">Non (conseil hors score)</td><td class="how">Diagnostic « expérience vécue ».</td></tr>
+          <tr><td class="name">Liste / hub</td><td class="desc">Présenter</td><td class="how">Proposition claire</td><td class="how">Non</td><td class="how">Ses liens marquent leurs pages cibles (article ou réalisation) pour la détection du rôle.</td></tr>
+          <tr><td class="name">Utilitaire (légal, plan du site)</td><td class="desc">Non notée</td><td class="how">Proposition claire (affichée, hors note)</td><td class="how">Non</td><td class="how">Comme le contact : requête de marque seule, ni suggestions Google, pas d'expérience vécue ni de gain d'information. Compte dans l'alerte des piliers.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h4>Critères en cases qui composent la note</h4>
+    <div class="table-wrap">
+      <table class="role-table">
+        <thead><tr><th>Critère</th><th>Retenu pour</th><th>Cases et points (le code additionne les cases cochées)</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Intention de recherche, 15 pts</td><td class="desc">Toutes les pages notées</td><td class="how">Répond au besoin principal 6 · format adapté 4 · centrée sur le sujet 3 · bon public 2</td></tr>
+          <tr><td class="name">Début de page, 10 pts : réponse directe</td><td class="desc">Famille « informer »</td><td class="how">Réponse ou résumé dans l'introduction 4 (phrase copiée par l'IA, retrouvée mot pour mot dans les 150 premiers mots) · réponse qui se suffit 3 · réponse précise : chiffre, nom, étape, condition 3</td></tr>
+          <tr><td class="name">Début de page, 10 pts : proposition claire</td><td class="desc">Famille « présenter »</td><td class="how">Ce qui est proposé et pour qui dès l'introduction 6 (même vérification) · introduction précise 4</td></tr>
+          <tr><td class="name">Couverture du sujet, 20 pts</td><td class="desc">Famille « informer »</td><td class="how">Notions centrales 6 · questions des internautes 5 · notions expliquées 5 · exemples 4</td></tr>
+          <tr><td class="name">Crédibilité, 20 pts</td><td class="desc">Page marque / institutionnelle</td><td class="how">Preuve concrète 7 (phrase copiée par l'IA, retrouvée mot pour mot dans la page) · ce qui distingue 5 · qui est derrière 4 · repères de solidité 4</td></tr>
+          <tr><td class="name">Savoir-faire, 20 pts</td><td class="desc">Accueil, offre, liste, réalisation</td><td class="how">Preuve concrète 7 (vérifiée) · ce qui distingue l'approche 5 · ce qui est fait et comment 4 · besoins traités 4</td></tr>
+          <tr><td class="name">Auteur, date, sources, 10 pts</td><td class="desc">Rôle article seulement</td><td class="how">Auteur 5 · date de publication 3 (lus dans la page) · sources 2 (jugées par l'IA)</td></tr>
+          <tr><td class="name">Qualité du contenu, 15 pts</td><td class="desc">Famille « informer »</td><td class="how">Expérience vécue 3 (un extrait) ou 5 (deux ou plus) · donnée ou méthode propre 4 · cas concret 4 · limite reconnue 2. Calculée par le code sur des extraits retrouvés mot pour mot</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note info">Ne dépendent pas de la famille : cannibalisation (10 pts, mesurée seulement), couverture des recherches (15 pts) et lisibilité (5 pts). Dans le doute, l'IA répond « non » : une case n'est jamais cochée au hasard.</div>
+    <h4>Ce qui a été retiré le 09/11/2026</h4>
+    <div class="table-wrap">
+      <table class="role-table">
+        <thead><tr><th>Retiré</th><th>Raison</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Questions posées deux fois</td><td class="desc">Sur une page d'accueil ou d'offre, « ce qui est proposé et pour qui », « ce qui distingue » et « action visible » étaient jugés au début de page et à l'objectif « convaincre » : 24 points sur 75 comptés deux fois.</td></tr>
+          <tr><td class="name">Critères de conversion</td><td class="desc">Action visible, reprise plus bas, un seul chemin, étape suivante : utiles pour convertir, pas pour se classer. Ils restent possibles en pistes bleues.</td></tr>
+          <tr><td class="name">Objectifs « Convertir », « Rassurer », « Raconter »</td><td class="desc">Variantes de « présenter », fondues dans « Présentation et preuves » (v12), elle-même remplacée le 10/11/2026 par « Crédibilité » et « Savoir-faire », sans case « conditions pratiques ».</td></tr>
+          <tr><td class="name">Choix manuel de l'objectif</td><td class="desc">« Aller droit au but » permettait de retirer 20 points d'une page d'offre ; corriger le rôle suffit.</td></tr>
+          <tr><td class="name">Cannibalisation estimée dans la note</td><td class="desc">Estimation sur les adresses et les titres seulement, presque toujours au maximum : constat hors note.</td></tr>
+          <tr><td class="name">Contact et légal notés sur 55</td><td class="desc">Sans enjeu éditorial : hors de la note éditoriale du site.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h4>Autres effets du rôle et de la famille</h4>
+    <div class="table-wrap">
+      <table class="role-table">
+        <thead><tr><th>Effet</th><th>Selon le rôle ou la famille</th><th>Impact sur le score</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Requêtes notées et suggestions Google</td><td class="desc">Contact et utilitaire : la requête de marque seule, ni candidates ni suggestions (sauf requête saisie). Marque : requêtes candidates génériques.</td><td class="how">Indirect</td></tr>
+          <tr><td class="name">Cannibalisation mesurée</td><td class="desc">Ignorée pour une requête de marque (contact, utilitaire, marque dans la requête).</td><td class="how">Indirect</td></tr>
+          <tr><td class="name">Libellé de l'anomalie du début de page</td><td class="desc">« Absence de réponse directe d'entrée (TL;DR) » pour un article ou un contenu informatif ; « Proposition de valeur peu claire en début de page » pour les autres.</td><td class="how">Non</td></tr>
+          <tr><td class="name">Expérience vécue (diagnostic)</td><td class="desc">Pages qui informent seulement (article, contenu informatif) depuis le 10/11/2026 : pour une page qui présente, la preuve est déjà jugée dans « Crédibilité » ou « Savoir-faire ».</td><td class="how">Non</td></tr>
+          <tr><td class="name">Gain d'information (diagnostic)</td><td class="desc">Pages qui informent seulement, même raison.</td><td class="how">Non</td></tr>
+          <tr><td class="name">Alerte « Pages piliers surtout institutionnelles »</td><td class="desc">Quand au moins 75 % des piliers (3 au moins) sont accueil, marque, contact ou utilitaire.</td><td class="how">Non</td></tr>
+          <tr><td class="name">Citabilité GEO (masquée depuis le 05/11/2026)</td><td class="desc">Contact et utilitaire : exemptés.</td><td class="how">Indirect, hors notes tant que le GEO est masqué</td></tr>
+          <tr><td class="name">Réécriture proposée</td><td class="desc">Une fiche de rédaction par rôle (<code>writingGuide</code>) ; le rôle et la famille sont donnés à l'IA ; une réécriture devient périmée si la famille change.</td><td class="how">Non</td></tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
   <!-- ===================================================== GEO -->
   <section id="geo" data-filterable>
     <h2><span class="num">3</span>GEO : visibilité dans les moteurs de réponse IA</h2>
+    <p class="section-intro"><strong>Mis de côté depuis le 5 novembre 2026</strong> : calculé et enregistré, mais ni compté dans les notes ni affiché dans l'application.</p>
     <p class="section-intro">Calculé sur les pages piliers. Le GEO (Generative Engine Optimization) mesure si une IA comme ChatGPT, Perplexity ou Google AI Overviews peut lire la page, comprendre de quoi elle parle et en citer des passages. Ces poids sont des choix éditoriaux : ils n'ont pas encore été vérifiés sur des citations réelles.</p>
     <figure class="srcmap" aria-label="D'où viennent les données GEO">
       <figcaption><strong>D'où viennent les données GEO</strong><small>l'IA propose les passages, le code les vérifie</small></figcaption>
@@ -959,7 +1044,7 @@
       <div class="sm-head" aria-hidden="true"><span>Source</span><span>Ce qu'elle fournit</span><span>Critères alimentés</span></div>
       <div class="sm-row"><div class="sm-src k-google"><span class="kind">Google</span><strong>Résultats de recherche Google</strong><small>Chrome local sur google.fr (Patchright), ou API Serper en option</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Top 10 à 30, pack local, « Autres questions posées », liens annexes</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Position de la page</span><span>Lecture du Top 10</span><span>Pack local</span><span>Concurrents</span></div></div>
       <div class="sm-row"><div class="sm-src k-google"><span class="kind">Google</span><strong>Google Ads Keyword Planner</strong><small>volumes de recherche</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Requêtes les plus tapées pour chaque page</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Requêtes cochées par défaut</span></div></div>
-      <div class="sm-row"><div class="sm-src k-ext"><span class="kind">Source externe</span><strong>API Géo (geo.api.gouv.fr)</strong><small>service public, gratuit</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Villes, départements, régions validés</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Zones ciblées</span><span>Visibilité locale</span></div></div>
+      <div class="sm-row"><div class="sm-src k-ext"><span class="kind">Source externe</span><strong>API Géo (geo.api.gouv.fr)</strong><small>service public, gratuit</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Villes, départements, régions validés (pays et autres lieux sans l'API)</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Zones ciblées</span><span>Visibilité locale</span></div></div>
       <div class="sm-row"><div class="sm-src k-ia"><span class="kind">IA</span><strong>Modèle de langage (IA)</strong><small>à partir des seuls faits mesurés</small></div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-data">Explication en langage simple</div><div class="sm-arrow" aria-hidden="true"></div><div class="sm-out"><span>Avis de l'IA sur le positionnement</span></div></div>
       <div class="sm-sink">Tout converge vers <b>la Synthèse, le tiroir de chaque page</b> et la cannibalisation mesurée</div>
     </figure>
@@ -987,7 +1072,7 @@
           <tr>
             <td class="name">Zones ciblées<br><span class="badge b-ind">Influence le score</span></td>
             <td class="desc">Mesurer les positions là où sont les clients : une ville, un département ou une région.</td>
-            <td class="how">Jusqu'à 3 zones par projet, choisies dans l'onglet et vérifiées par l'API Géo officielle (geo.api.gouv.fr). Les recherches proposées n'ont aucun lieu ; <strong>au moment de la mesure, le nom de la zone est ajouté à la fin</strong> : « agence web » devient « agence web oise ». Une mesure par zone. Sans zone, rien n'est ajouté. Une page peut avoir sa propre zone (page « agence Dreux » d'un site basé à Chartres), qui remplace alors celles du projet ; une ville repérée dans la page est proposée (« Rattacher à Dreux ? »), jamais appliquée sans accord. Le texte réellement envoyé à Google est affiché sous la position. La position simulée de l'internaute (paramètre de lieu de Google) a été abandonnée : sur de vraies mesures, elle ne changeait pas les résultats de façon visible.</td>
+            <td class="how">Jusqu'à 3 zones par projet, choisies dans l'onglet : ville, département ou région vérifiés par l'API Géo officielle (geo.api.gouv.fr), pays, ou autre lieu écrit tel quel (« Côte d'Azur », « Casablanca »). Un pays n'est pas retiré des recherches proposées, car il fait souvent partie du produit (« veste maroc »). Les recherches proposées n'ont aucun lieu ; <strong>au moment de la mesure, le nom de la zone est ajouté à la fin</strong> : « agence web » devient « agence web oise ». Une mesure par zone. Sans zone, rien n'est ajouté. Une page peut avoir sa propre zone (page « agence Dreux » d'un site basé à Chartres), qui remplace alors celles du projet ; une ville repérée dans la page est proposée (« Rattacher à Dreux ? »), jamais appliquée sans accord. Le texte réellement envoyé à Google est affiché sous la position. La position simulée de l'internaute (paramètre de lieu de Google) a été abandonnée : sur de vraies mesures, elle ne changeait pas les résultats de façon visible.</td>
           </tr>
           <tr>
             <td class="name">Budget de recherches<br><span class="badge b-off">Hors score</span></td>
@@ -1062,6 +1147,11 @@
             <td class="how"><span class="src">Mesuré</span> Pour les 20 premiers domaines, lecture de leur page d'accueil et de quelques pages de partenaires, références ou mentions légales. Un lien non retrouvé est souvent sur une page plus profonde : ce n'est pas une erreur.</td>
           </tr>
           <tr>
+            <td class="name">Liens précis<br><span class="badge b-off">Hors score</span></td>
+            <td class="desc">La page exacte qui fait le lien, avec son emplacement (contenu, menu, pied de page…), le texte du lien et son attribut nofollow, y compris pour des sites que Common Crawl ne connaît pas.</td>
+            <td class="how"><span class="src">Mesuré</span> Bouton lancé à la demande, séparé de l'audit : des recherches Google sur le nom de marque, défilées sur plusieurs pages de résultats, puis lecture en direct de chaque page trouvée. Les pages qui nomment la marque sans lien sont listées à part, à confirmer (le nom peut désigner une autre entreprise). Google ne remonte pas tous les liens : le résultat est partiel, et les recherches suivent le budget des Paramètres.</td>
+          </tr>
+          <tr>
             <td class="name">Évolution<br><span class="badge b-off">Hors score</span></td>
             <td class="desc">Suivre les sites gagnés et perdus d'un audit à l'autre.</td>
             <td class="how">Comparaison avec l'audit précédent du même site. La liste des sites gagnés et perdus n'apparaît que s'il y a un changement. Les tuiles de l'onglet montrent les domaines référents, les liens vérifiés et les pages du site qui reçoivent un lien.</td>
@@ -1115,7 +1205,7 @@
         <dt>SERP</dt><dd>La page de résultats d'une recherche Google.</dd>
         <dt>Cannibalisation</dt><dd>Plusieurs pages d'un même site en concurrence sur la même recherche.</dd>
         <dt>Contenu informatif</dt><dd>Page qui informe sans être un article signé et daté : guide, FAQ, glossaire, page « comment ça marche ».</dd>
-        <dt>Zone ciblée</dt><dd>Ville, département ou région où se trouvent les clients ; son nom est ajouté aux recherches mesurées.</dd>
+        <dt>Zone ciblée</dt><dd>Ville, département, région, pays ou autre lieu où se trouvent les clients ; son nom est ajouté aux recherches mesurées. Une carte montre les zones, colorées selon la meilleure position mesurée, et un rayon réglable autour du siège avec les villes qu'il contient (aide au choix : Google n'est pas mesuré par distance).</dd>
         <dt>Pack local</dt><dd>Le bloc de Google avec une carte et des fiches d'établissements, affiché pour les recherches locales.</dd>
         <dt>Suggestions Google</dt><dd>Les recherches que Google propose pendant la saisie : de vraies recherches d'internautes.</dd>
       </dl>
@@ -1130,6 +1220,16 @@
 <script>
   (function () {
     var norm = function (t) { return t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); };
+
+    /* hauteur r\u00e9elle de la barre du haut (elle passe sur deux lignes quand la fen\u00eatre est \u00e9troite) : les en-t\u00eates de
+       tableau collants se placent juste dessous au lieu de se cacher derri\u00e8re */
+    var bar = document.querySelector('header.top');
+    if (bar) {
+      var syncBar = function () { document.documentElement.style.setProperty('--top-h', bar.getBoundingClientRect().height + 'px'); };
+      syncBar();
+      window.addEventListener('resize', syncBar);
+      if (window.ResizeObserver) new ResizeObserver(syncBar).observe(bar);
+    }
 
     /* thème clair / sombre mémorisé (stockage facultatif) */
     var root = document.documentElement;

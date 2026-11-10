@@ -41,6 +41,15 @@ export class TechScoringEngine {
 
     // Critères que le crawl ne mesure pas : exclus du score plutôt que crédités de points fictifs
     let unmeasuredPoints = 0;
+    // Mêmes points non mesurés, rangés par catégorie : sert à dire où une page perd réellement ses points
+    const unmeasured: TechScoreResult['breakdown'] = {
+      coreWebVitals: 0,
+      architecture: 0,
+      crawlability: 0,
+      securityAndHttp: 0,
+      htmlStructure: 0,
+      metadataAndMedia: 0
+    };
     let cwvScore = 0;
     let archScore = 0;
     let crawlScore = 0;
@@ -55,6 +64,7 @@ export class TechScoringEngine {
     // LCP (10 pts)
     if (typeof cwv.lcp !== 'number') {
       unmeasuredPoints += 10;
+      unmeasured.coreWebVitals += 10;
     } else if (cwv.lcp <= 2.5) {
       cwvScore += 10;
     } else if (cwv.lcp <= 4.0) {
@@ -98,6 +108,7 @@ export class TechScoringEngine {
     // INP (8 pts) : seulement disponible en données de terrain (trafic suffisant)
     if (typeof cwv.inp !== 'number') {
       unmeasuredPoints += 8;
+      unmeasured.coreWebVitals += 8;
     } else if (cwv.inp <= 200) {
       cwvScore += 8;
     } else if (cwv.inp <= 500) {
@@ -141,6 +152,7 @@ export class TechScoringEngine {
     // CLS (7 pts)
     if (typeof cwv.cls !== 'number') {
       unmeasuredPoints += 7;
+      unmeasured.coreWebVitals += 7;
     } else if (cwv.cls <= 0.1) {
       cwvScore += 7;
     } else if (cwv.cls <= 0.25) {
@@ -185,6 +197,7 @@ export class TechScoringEngine {
     // Profondeur de clic (10 pts). Une page atteinte seulement par le sitemap n'a pas de profondeur mesurable.
     if (page.depth < 0) {
       unmeasuredPoints += 10;
+      unmeasured.architecture += 10;
     } else if (page.depth <= 3) {
       archScore += 10;
     } else if (page.depth === 4) {
@@ -232,6 +245,7 @@ export class TechScoringEngine {
     } else if (page.discoveredVia === 'sitemap' && page.httpStatus >= 400) {
       // URL du sitemap en erreur : l'anomalie HTTP suffit, le maillage d'une page inexistante n'a pas de sens
       unmeasuredPoints += 10;
+      unmeasured.architecture += 10;
     } else if (page.discoveredVia === 'sitemap' && graphComplete) {
       archScore += 0;
       issues.push({
@@ -252,6 +266,7 @@ export class TechScoringEngine {
       });
     } else if (!graphComplete) {
       unmeasuredPoints += 10;
+      unmeasured.architecture += 10;
     } else {
       archScore += 5;
       issues.push({
@@ -275,6 +290,7 @@ export class TechScoringEngine {
     // robots.txt (5 pts)
     if (page.isBlockedByRobotsTxt === undefined) {
       unmeasuredPoints += 5;
+      unmeasured.crawlability += 5;
     } else if (!page.isBlockedByRobotsTxt) {
       crawlScore += 5;
     } else {
@@ -299,6 +315,7 @@ export class TechScoringEngine {
     // Sitemap XML (5 pts)
     if (page.inSitemap === undefined) {
       unmeasuredPoints += 5;
+      unmeasured.crawlability += 5;
     } else if (page.inSitemap) {
       crawlScore += 5;
     } else {
@@ -496,6 +513,7 @@ export class TechScoringEngine {
     // Hiérarchie H2-H6 : aucun effet démontré sur le classement, utile pour l'accessibilité.
     // Diagnostic hors score : ses 7 points sortent du dénominateur au lieu d'être accordés d'office.
     unmeasuredPoints += 7;
+    unmeasured.htmlStructure += 7;
     if (!page.headingHierarchyValid) {
       issues.push({
         id: `html-headings-hierarchy-${page.path}`,
@@ -621,6 +639,7 @@ export class TechScoringEngine {
     return {
       score: Math.round(totalScore),
       unmeasuredPoints,
+      unmeasuredBreakdown: unmeasured,
       breakdown: {
         coreWebVitals: cwvScore,
         architecture: archScore,

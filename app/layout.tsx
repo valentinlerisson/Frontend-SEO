@@ -15,11 +15,11 @@ export const metadata: Metadata = {
     template: '%s — Auditly',
   },
   description:
-    'Lancez des audits SEO & GEO à partir d’une URL, suivez vos projets actifs et accédez aux résultats de vos derniers audits.',
+    'Lancez des audits SEO à partir d’une URL, suivez vos projets actifs et accédez aux résultats de vos derniers audits.',
   openGraph: {
     title: 'Auditly - BigApp SEO',
     description:
-      'Lancez des audits SEO & GEO à partir d’une URL, suivez vos projets actifs et accédez aux résultats de vos derniers audits.',
+      'Lancez des audits SEO à partir d’une URL, suivez vos projets actifs et accédez aux résultats de vos derniers audits.',
   },
 }
 

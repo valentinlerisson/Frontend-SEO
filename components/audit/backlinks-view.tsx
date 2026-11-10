@@ -4,6 +4,7 @@ import { Fragment, useState } from 'react'
 import { ChevronDown, ExternalLink, Info } from 'lucide-react'
 import { AuditHeader } from './audit-header'
 import { AuditStateGate } from './audit-state-gate'
+import { BacklinksDiscoveryPanel } from './backlinks-discovery-panel'
 import { useAudit } from '@/components/providers/audit-provider'
 import type { ReferringDomain } from '@/core/domain/types'
 import { backlinkSummary, releaseLabel } from '@/lib/backlink-labels'
@@ -102,6 +103,8 @@ export function BacklinksView() {
               </div>
             ))}
           </section>
+
+          <BacklinksDiscoveryPanel report={report} domain={audit.domain} projectId={audit.projectId} />
 
           {report.changes && (report.changes.added.length > 0 || report.changes.lost.length > 0) && (
             <section className="glass-card rounded-2xl border p-5 text-sm">

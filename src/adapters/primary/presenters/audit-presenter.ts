@@ -12,20 +12,26 @@ import {
   InspectionDetail,
   LocalVisibility,
   QuerySetSummary,
+  DashboardData,
+  ScorePoint,
 } from '@/lib/audit-data';
 import type { GeoZone } from '@/core/domain/zones';
 import { normalizeText } from '@/core/domain/scoring/autocomplete-relevance';
 import { serpForQuery } from '@/core/domain/scoring/query-candidates';
 import type { KeywordResearch } from '@/core/domain/keyword-research';
-import type { PageRewrite } from '@/core/domain/page-rewrite';
+import type { KeywordOpportunities } from '@/core/domain/keyword-opportunities';
+import { GEO_ENABLED } from '@/core/domain/features';
+import { PILLAR_WEIGHTS } from '@/core/domain/scoring/GlobalScoringEngine';
+import { lossesOfPage, pageHealthOf, searchDemandOf, siteGainsOf } from './dashboard-data';
+import { isRewriteOutdated, SNIPPET_REWRITE_STEP, type PageRewrite } from '@/core/domain/page-rewrite';
 import { detectEstablishments, parseAddress, zoneCoverage, zoneMeasures } from '@/core/domain/local-visibility';
 import type {
   BacklinkReport,
   CrawlScope,
+  EditorialCriterion,
   EditorialEvaluation,
   EditorialSignals,
   GeoEvaluation,
-  PageGoal,
   PageRole,
   RoleSignals,
   SerpAnalysis,
@@ -44,7 +50,8 @@ import { compareIssues, getIssueImpact, IMPACT_RANK } from '@/lib/issue-impact';
 import { getScoreEffect } from '@/lib/score-effect';
 import { buildEditorialSections, editorialCategories, intentSummary, positionSummary } from './editorial-sections';
 import { classifyPageRole, resolvePageRole, ROLE_LABEL } from '@/core/domain/scoring/page-role';
-import { GOAL_LABEL, resolveGoal } from '@/core/domain/scoring/page-goal';
+import { FAMILY_LABEL, familyOf, subjectGridOf } from '@/core/domain/scoring/page-family';
+import { gridMatches } from '@/core/domain/scoring/editorial-checks';
 import { getInspectionTarget } from '@/lib/issue-routing';
 import { describePagePosition } from '@/lib/serp-labels';
 import { buildSynthesisAdvice } from './synthesis-advice';
@@ -145,9 +152,10 @@ type PageMetrics = {
     hasPublicationDate?: boolean;
     schemaTypes?: string[];
     roleSignals?: RoleSignals;
+    /** Titres de la page dans l'ordre (H1 à H6) */
+    headings?: { level: number; text: string }[];
   };
   roleOverride?: PageRole;
-  goalOverride?: PageGoal;
   techMeasuredPoints?: number;
   links?: { href: string; text: string; internal: boolean; nofollow: boolean }[];
   inlinkSources?: string[];
@@ -165,6 +173,7 @@ type PageEvaluation = {
   /** Requête cible décochée par l'utilisateur au dernier lancement (non mesurée volontairement) */
   serpTargetSkipped?: string;
   keywords?: KeywordResearch;
+  opportunities?: KeywordOpportunities;
   rewrite?: PageRewrite;
 };
 
@@ -180,6 +189,21 @@ function parseJson<T>(raw?: string | null): T | null {
 function readMetrics(page: PersistencePageRecord): PageMetrics | null {
   return parseJson<PageMetrics>(page.metricsRaw);
 }
+
+/** Critère noté auquel une anomalie éditoriale retire des points */
+const EDITORIAL_CRITERION_OF: Record<string, EditorialCriterion> = {
+  INTENT_MISMATCH: 'intent',
+  CANNIBALIZATION_RISK: 'cannibal',
+  HOT_ZONES_UNOPTIMIZED: 'hotZones',
+  MISSING_TLDR_SUMMARY: 'opening',
+  SEMANTIC_GAPS: 'goal',
+  LOW_EEAT_SIGNALS: 'eeat',
+  NO_FIRST_HAND_EXPERIENCE: 'quality',
+  GENERIC_CONTENT: 'quality',
+  DENSE_PARAGRAPHS: 'readability',
+  LONG_SENTENCES: 'readability',
+  NO_LISTS_OR_TABLES: 'readability',
+};
 
 function readEvaluation(page: PersistencePageRecord): PageEvaluation | null {
   return parseJson<PageEvaluation>(page.aiEvaluationRaw);
@@ -266,6 +290,7 @@ function toPageDetails(page: PersistencePageRecord): PageDetails {
       ?.filter((image) => !image.alt?.trim())
       .map((image) => fileLabel(image.src)),
     inlinkSources: metrics?.inlinkSources,
+    headings: metrics?.content?.headings,
     httpStatus: page.httpStatus,
     responseTime: formatResponseTime(page),
     redirectUrl: metrics?.finalUrl,
@@ -293,17 +318,19 @@ function roleOf(page: PersistencePageRecord) {
     ...metrics?.content?.roleSignals,
   });
   const { role, source } = resolvePageRole({ manual: metrics?.roleOverride, ai: editorial?.role, detected });
-  const { goal, source: goalSource } = resolveGoal({ manual: metrics?.goalOverride, role });
+  const family = familyOf(role);
+  const grid = subjectGridOf(role);
+  const checks = editorial?.checks;
   return {
     role,
     roleLabel: ROLE_LABEL[role],
     roleSource: source,
     roleReason: source === 'ai' ? editorial?.roleReason : undefined,
-    goal,
-    goalLabel: GOAL_LABEL[goal],
-    goalSource,
-    // Pistes issues d'une analyse faite sous un autre objectif (« aller droit au but » n'en a pas besoin)
-    goalStale: Boolean(editorial) && goal !== 'direct' && (editorial?.goal ?? 'cover') !== goal ? true : undefined,
+    family,
+    familyLabel: FAMILY_LABEL[family],
+    // Grille du critère « sujet » remplie sous une autre grille (rôle changé, prompt v12) ou un ancien objectif : note
+    // provisoire, à relancer (une page non notée n'en a pas besoin)
+    familyStale: grid && checks && !gridMatches(checks.goalKey, grid) ? true : undefined,
   };
 }
 
@@ -358,7 +385,12 @@ export class AuditPresenter {
    */
   public static toProjectAuditData(
     audit: PersistenceAuditWithRelations,
-    projectInfo?: { id: string; domain: string; name: string; zonesRaw?: string | null; pageZonesRaw?: string | null }
+    projectInfo?: { id: string; domain: string; name: string; zonesRaw?: string | null; pageZonesRaw?: string | null },
+    /** Audits terminés précédents du projet (notes) et pages de l'audit terminé le plus récent avant celui-ci */
+    history?: {
+      audits: ScorePoint[];
+      previousPages?: { date: string; pages: { url: string; techScore: number | null; editorialScore: number | null; geoScore: number | null; isPillar: boolean }[] };
+    }
   ): ProjectAuditData {
     const domain = projectInfo?.domain || audit.project?.domain || 'domaine-inconnu.fr';
     const projectName = projectInfo?.name || audit.project?.name || domain.split('.')[0];
@@ -369,9 +401,10 @@ export class AuditPresenter {
     const isLocked = audit.status !== 'COMPLETED' && !audit.completedAt;
 
     const pages = audit.pages ?? [];
-    // Phase 1 : seules les anomalies techniques sont exposées
+    // Phase 1 : seules les anomalies techniques sont exposées. GEO mis de côté (`GEO_ENABLED`) : ses anomalies restent
+    // enregistrées mais ne sont plus montrées
     const issues = (audit.issues ?? []).filter(
-      (i) => !isLocked || i.pillar.toUpperCase() === 'TECH'
+      (i) => (!isLocked || i.pillar.toUpperCase() === 'TECH') && (GEO_ENABLED || i.pillar.toUpperCase() !== 'GEO')
     );
 
     const isCrawling = audit.status === 'CRAWLING_TECH' || audit.status === 'QUEUED';
@@ -381,12 +414,12 @@ export class AuditPresenter {
     // Normalisation des scores globaux en entiers
     const techScore = Math.round(audit.techScore ?? 0);
     const editorialScore = isLocked ? null : Math.round(audit.editorialScore ?? 0);
-    const geoScore = isLocked ? null : Math.round(audit.geoScore ?? 0);
+    const geoScore = isLocked || !GEO_ENABLED ? null : Math.round(audit.geoScore ?? 0);
     const globalScore = isLocked
       ? null
       : Math.round(
           audit.overallScore ??
-            techScore * 0.4 + (editorialScore ?? 0) * 0.35 + (geoScore ?? 0) * 0.25
+            techScore * PILLAR_WEIGHTS.tech + (editorialScore ?? 0) * PILLAR_WEIGHTS.editorial + (geoScore ?? 0) * PILLAR_WEIGHTS.geo
         );
 
     // Zones ciblées : celles du projet, et la zone propre de certaines pages (clé d'URL sans protocole ni www)
@@ -407,10 +440,10 @@ export class AuditPresenter {
     // Moyennes sur les pages piliers réelles
     const validPillars = pillarPages.filter((p) => p.indexable && p.httpStatus < 400);
 
+    // Pages non notées (contact, légal, utilitaire) hors de la moyenne éditoriale
+    const scoredPillars = validPillars.flatMap((p) => (p.editorialScore === null ? [] : [p.editorialScore]));
     const editorialMean =
-      validPillars.length > 0
-        ? Math.round(validPillars.reduce((acc, p) => acc + p.editorialScore, 0) / validPillars.length)
-        : 0;
+      scoredPillars.length > 0 ? Math.round(scoredPillars.reduce((acc, score) => acc + score, 0) / scoredPillars.length) : 0;
 
     const geoMean =
       validPillars.length > 0
@@ -447,6 +480,14 @@ export class AuditPresenter {
       .map((p) => readMetrics(p)?.domain)
       .find((meta) => meta !== undefined);
 
+    // Graphiques : points perdus par critère (pages et site), demande de recherche, état des pages, évolution
+    const issueCodesByUrl = new Map<string, string[]>();
+    for (const issue of audit.issues ?? []) {
+      if (issue.affectedUrl) issueCodesByUrl.set(issue.affectedUrl, [...(issueCodesByUrl.get(issue.affectedUrl) ?? []), issue.code]);
+    }
+    const urlKey = (url: string) => url.replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, '').toLowerCase();
+    const previousByUrl = new Map((history?.previousPages?.pages ?? []).map((page) => [urlKey(page.url), page]));
+
     const inspections: Record<string, InspectionData> = {};
     for (const page of pages) {
       inspections[page.id] = this.toInspectionData(
@@ -454,7 +495,42 @@ export class AuditPresenter {
         issues.filter((i) => i.affectedUrl === page.url),
         isLocked
       );
+      const previous = previousByUrl.get(urlKey(page.url));
+      const cwv = readMetrics(page)?.cwv;
+      inspections[page.id].essentials = {
+        losses: lossesOfPage(page, issueCodesByUrl.get(page.url) ?? [], !isLocked),
+        ...(previous && history?.previousPages
+          ? {
+              previous: {
+                date: history.previousPages.date,
+                tech: previous.techScore === null ? null : Math.round(previous.techScore),
+                editorial: previous.isPillar && previous.editorialScore !== null ? Math.round(previous.editorialScore) : null,
+                geo: previous.isPillar && previous.geoScore !== null ? Math.round(previous.geoScore) : null,
+              },
+            }
+          : {}),
+        ...(cwv && (cwv.lcp !== undefined || cwv.inp !== undefined || cwv.cls !== undefined)
+          ? { cwv: { lcp: cwv.lcp, inp: cwv.inp, cls: cwv.cls } }
+          : {}),
+      };
     }
+    const siteLosses = siteGainsOf(pages, issueCodesByUrl, !isLocked);
+    const dashboard: DashboardData = {
+      history: [
+        ...(history?.audits ?? []),
+        {
+          date: (audit.completedAt ?? new Date()).toISOString(),
+          global: globalScore,
+          tech: techScore,
+          editorial: editorialScore,
+          geo: geoScore,
+        },
+      ],
+      gains: siteLosses.gains,
+      techDetail: { known: siteLosses.techKnown, counted: siteLosses.techCounted },
+      searchDemand: isLocked ? undefined : searchDemandOf(pages),
+      pageHealth: pageHealthOf(pages, !isLocked),
+    };
 
     return {
       projectId,
@@ -493,7 +569,8 @@ export class AuditPresenter {
               .filter((p) => p.isPillar && !isBlockedPage(p))
               .flatMap((p) => {
                 const evaluation = readEvaluation(p);
-                if (!evaluation?.editorial) return [];
+                // Page non notée (contact, légal, utilitaire) : ni « page la plus basse », ni critère le plus faible
+                if (!evaluation?.editorial || roleOf(p).family === 'unscored') return [];
                 return [
                   {
                     path: pathOf(p),
@@ -516,6 +593,7 @@ export class AuditPresenter {
         pillarsDone: pages.filter((p) => p.isPillar && readEvaluation(p)?.editorialStatus).length,
         pillarsTotal: pages.filter((p) => p.isPillar).length,
       },
+      dashboard,
     };
   }
 
@@ -557,7 +635,7 @@ export class AuditPresenter {
     const known = zones.some(
       (zone) =>
         key(zone.name) === key(city ?? '') ||
-        key(zone.city.name) === key(city ?? '') ||
+        key(zone.city?.name ?? '') === key(city ?? '') ||
         Boolean(establishment && zone.postalCodes?.includes(establishment.postalCode))
     );
     return city && !known
@@ -604,7 +682,9 @@ export class AuditPresenter {
       .filter((zone): zone is GeoZone => Boolean(zone && !zones.some((item) => item.id === zone.id)))
       .filter((zone, index, list) => list.findIndex((item) => item.id === zone.id) === index);
 
+    const headquarters = parseAddress(siteAddressOf(pages));
     return {
+      ...(headquarters ? { headquarters } : {}),
       zones: [...zones.map((zone) => ({ zone, fromPage: false })), ...pageOnlyZones.map((zone) => ({ zone, fromPage: true }))].map(
         ({ zone, fromPage }) => ({
           zone,
@@ -727,6 +807,7 @@ export class AuditPresenter {
     const evaluation = readEvaluation(page);
     const editorial = evaluation?.editorial;
     const geo = evaluation?.geo;
+    const unscored = roleOf(page).family === 'unscored';
 
     // Conflit : score < 10 ET page concurrente identifiée. Recoupement partiel : score < 15 ET page identifiée.
     const cannibal = editorial?.cannibalizationRisk;
@@ -754,7 +835,8 @@ export class AuditPresenter {
       targetKeyword:
         editorial?.search?.targetQuery.query || page.targetQuery || page.h1?.slice(0, 40) || 'Non détecté',
       isAutoDetectedKeyword: page.targetQuerySource !== 'MANUAL',
-      editorialScore: Math.round(page.editorialScore ?? 0),
+      // Page non notée (contact, légal, utilitaire) : pas de note éditoriale
+      editorialScore: unscored ? null : Math.round(page.editorialScore ?? 0),
       intentMatchScore: Math.min(20, Math.max(0, Math.round(editorial?.intentMatch?.score ?? 0))),
       hotZonesScore: Math.min(
         15,
@@ -884,7 +966,8 @@ export class AuditPresenter {
         impactCount: impactedUrls.length,
         description: first.description,
         recommendation: first.recommendation,
-        steps: parseSteps(first.stepsToResolve),
+        // Anomalies enregistrées avant le 05/11/2026 : leurs étapes citaient le Title et la méta de l'analyse
+        steps: code === 'WEAK_SNIPPET' ? [SNIPPET_REWRITE_STEP] : parseSteps(first.stepsToResolve),
         previewItems: previewItems.slice(0, 5),
         impactedUrls,
       };
@@ -905,7 +988,7 @@ export class AuditPresenter {
     const hideAi = blocked || locked;
 
     const metrics = readMetrics(page);
-    const { role, goal, goalStale } = roleOf(page);
+    const { role, family, familyStale } = roleOf(page);
     const evaluation = hideAi ? null : readEvaluation(page);
     const editorial = evaluation?.editorial;
     const geo = evaluation?.geo;
@@ -939,13 +1022,24 @@ export class AuditPresenter {
           };
         })
         .sort((a, b) => b.rank - a.rank || Number(b.critical) - Number(a.critical))
-        .map(({ issue, critical }) => ({
-          type: (critical ? 'alert' : 'optimization') as 'alert' | 'optimization',
-          text: issue.title,
-          section: getInspectionTarget({ pillar: pillar as IssuePillar, code: issue.code }).section,
-          affectsScore: getScoreEffect(issue.code).affects,
-          maxPoints: getScoreEffect(issue.code).maxPoints,
-        }));
+        .map(({ issue, critical }) => {
+          // Page non notée, ou critère absent des points de la page (cannibalisation estimée, qualité d'une page qui
+          // présente, lisibilité peu fiable…) : constat hors note, aucun point en jeu
+          const criterion = EDITORIAL_CRITERION_OF[issue.code];
+          const outOfScore =
+            pillar === 'EDITORIAL' &&
+            (family === 'unscored' ||
+              (issue.code === 'CANNIBALIZATION_RISK' && !editorial?.points?.cannibal) ||
+              (criterion !== undefined && editorial?.points !== undefined && !editorial.points[criterion]));
+          const effect = outOfScore ? { affects: false, maxPoints: null } : getScoreEffect(issue.code);
+          return {
+            type: (critical ? 'alert' : 'optimization') as 'alert' | 'optimization',
+            text: issue.title,
+            section: getInspectionTarget({ pillar: pillar as IssuePillar, code: issue.code }).section,
+            affectsScore: effect.affects,
+            maxPoints: effect.maxPoints,
+          };
+        });
 
     // ---------------- Technique ----------------
     const titleLength = page.title?.length ?? 0;
@@ -1119,14 +1213,14 @@ export class AuditPresenter {
       ? buildEditorialSections({
           editorial,
           role,
-          goal,
-          goalStale,
+          family,
+          familyStale,
           serp,
           signals: metrics?.content?.signals,
           page: { title: page.title, metaDescription: page.metaDescription, wordCount: page.wordCount ?? 0 },
         })
       : [];
-    const editorialCategoryBars = editorial ? editorialCategories(editorial, role, goal) : [];
+    const editorialCategoryBars = editorial ? editorialCategories(editorial, role, family) : [];
 
     // ---------------- GEO ----------------
     // Balisage Schema.org (porte aussi les signaux E-E-A-T) : mis en avant si une anomalie le réclame
@@ -1339,7 +1433,8 @@ export class AuditPresenter {
         ],
       },
       editorial: {
-        score: hideAi ? 0 : Math.round(page.editorialScore ?? 0),
+        // Page non notée (contact, légale, utilitaire) : pas de note éditoriale
+        score: hideAi ? 0 : family === 'unscored' ? null : Math.round(page.editorialScore ?? 0),
         coverage: hideAi ? undefined : editorial?.coverage,
         targetKeyword:
           editorial?.search?.targetQuery.query || page.targetQuery || page.h1?.slice(0, 40) || 'Non détecté',
@@ -1355,15 +1450,16 @@ export class AuditPresenter {
         queryKept: editorial?.search?.targetQuery.kept,
         position: editorial ? positionSummary(editorial, role, serp) : undefined,
         keywords: hideAi ? undefined : readEvaluation(page)?.keywords,
+        opportunities: hideAi ? undefined : readEvaluation(page)?.opportunities,
         querySet: hideAi ? undefined : [...(editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight),
         querySetManual: Boolean(parseJson<{ querySetOverride?: string[] }>(page.metricsRaw)?.querySetOverride?.length),
         rewrite: (() => {
           const rewrite = hideAi ? undefined : readEvaluation(page)?.rewrite;
           if (!rewrite) return undefined;
-          const heaviest = [...(editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight)[0]?.query;
-          const principal = heaviest ?? editorial?.search?.targetQuery.query ?? page.targetQuery ?? page.h1 ?? page.title ?? '';
-          const outdated =
-            rewrite.basedOn.contentHash !== (page.contentHash ?? '') || rewrite.basedOn.goal !== roleOf(page).goal || rewrite.basedOn.principal !== principal;
+          const queries = [...(editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight).map((entry) => entry.query);
+          const principal = queries[0] ?? editorial?.search?.targetQuery.query ?? page.targetQuery ?? page.h1 ?? page.title ?? '';
+          // Périmée aussi quand les requêtes cochées changent : Title, méta et titres doivent les reprendre
+          const outdated = isRewriteOutdated(rewrite.basedOn, { contentHash: page.contentHash ?? '', family, principal, queries });
           return { ...rewrite, outdated };
         })(),
         priorities: hideAi ? [] : toPriorities('EDITORIAL'),

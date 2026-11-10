@@ -1,5 +1,6 @@
-import type { PageGoal, PageRole, SearchInsights } from '../types';
+import type { PageRole, SearchInsights, SubjectGrid } from '../types';
 import { normalizeQuote } from './citability';
+import { subjectGridOf } from './page-family';
 
 /**
  * Grilles à cases des critères éditoriaux jugés par l'IA. L'IA ne donne plus une note de 0 à 20 (qui se tassait sur
@@ -15,6 +16,11 @@ export interface Check {
   /** Question posée à l'IA */
   question: string;
   points: number;
+  /**
+   * Case appuyée sur un extrait copié par l'IA : cochée seulement si le code retrouve l'extrait mot pour mot
+   * (`openingQuote` dans les 150 premiers mots, `proofQuote` n'importe où dans le contenu)
+   */
+  quote?: 'openingQuote' | 'proofQuote';
 }
 
 /** Réponse à la recherche visée (15 pts) */
@@ -27,53 +33,54 @@ export const INTENT_CHECKS: Check[] = [
 
 /** Début de page (10 pts) : réponse directe pour un contenu qui répond à une question */
 export const OPENING_ANSWER_CHECKS: Check[] = [
-  { id: 'lead', label: 'Réponse ou résumé dans l’introduction (phrase vérifiée)', question: 'La réponse ou le résumé est-il donné dans l’introduction ? Copie cette phrase dans openingQuote.', points: 4 },
+  { id: 'lead', label: 'Réponse ou résumé dans l’introduction (phrase vérifiée)', question: 'La réponse ou le résumé est-il donné dans l’introduction ? Copie cette phrase dans openingQuote.', points: 4, quote: 'openingQuote' },
   { id: 'complete', label: 'Réponse qui se suffit', question: 'Cette réponse se suffit-elle : comprend-on l’essentiel sans lire la suite ?', points: 3 },
   { id: 'precise', label: 'Réponse précise (chiffre, nom, étape, condition)', question: 'Contient-elle un élément précis (chiffre, nom, étape, condition) plutôt qu’une généralité ?', points: 3 }
 ];
 
-/** Début de page (10 pts) : proposition de valeur pour les autres pages */
-export const OPENING_OFFER_CHECKS: Check[] = [
-  { id: 'lead', label: 'Ce qui est proposé et pour qui, dès l’introduction (phrase vérifiée)', question: 'Ce qui est proposé et pour qui est-il dit dès l’introduction ? Copie cette phrase dans openingQuote.', points: 4 },
-  { id: 'distinct', label: 'Ce qui distingue l’organisation, dès le début', question: 'Ce qui distingue l’organisation est-il dit dès le début de la page ?', points: 3 },
-  { id: 'action', label: 'Action visible dès l’arrivée', question: 'Une action est-elle visible dès l’arrivée (bouton, lien, téléphone) ?', points: 3 }
+/**
+ * Début de page (10 pts) : proposition claire pour les pages qui présentent (prompt v12). Ce qui distingue
+ * l'organisation et l'action visible ne sont plus demandés ici : la différence est jugée une seule fois, dans
+ * « Crédibilité » ou « Savoir-faire », et l'action relève de la conversion (pistes hors note).
+ */
+export const OPENING_PITCH_CHECKS: Check[] = [
+  { id: 'pitch', label: 'Ce qui est proposé et pour qui, dès l’introduction (phrase vérifiée)', question: 'Ce qui est proposé et pour qui est-il dit dès l’introduction ? Copie cette phrase dans openingQuote.', points: 6, quote: 'openingQuote' },
+  { id: 'specific', label: 'Introduction précise (prestation, public, lieu ou chiffre nommés)', question: 'Cette introduction est-elle précise (prestation, public, lieu ou chiffre nommés) plutôt qu’un slogan ?', points: 4 }
 ];
 
-/** Critère de l'objectif de la page (20 pts) */
-export const GOAL_CHECKS: Record<Exclude<PageGoal, 'direct'>, Check[]> = {
-  cover: [
+/**
+ * Critère « sujet » (20 pts), grille selon le rôle (prompt v13) : couverture du sujet pour une page qui informe,
+ * crédibilité pour une page institutionnelle, savoir-faire pour les autres pages qui présentent. Une page non notée
+ * n'en a pas. Aucune case ne juge la conversion (prix, modalités, action).
+ */
+export const SUBJECT_CHECKS: Record<SubjectGrid, Check[]> = {
+  inform: [
     { id: 'core', label: 'Notions centrales du sujet traitées', question: 'Les notions centrales du sujet sont-elles traitées ?', points: 6 },
     { id: 'questions', label: 'Questions des internautes traitées', question: 'Les questions que se posent les internautes (voir les suggestions Google fournies) trouvent-elles une réponse ?', points: 5 },
     { id: 'depth', label: 'Notions expliquées et mises en contexte', question: 'Les notions sont-elles expliquées et mises en contexte, pas seulement citées ?', points: 5 },
     { id: 'examples', label: 'Exemples ou cas d’application', question: 'Des exemples ou cas d’application illustrent-ils le propos ?', points: 4 }
   ],
-  convince: [
-    { id: 'offer', label: 'Ce qui est proposé et à qui', question: 'Ce qui est proposé et à qui est-il clair ?', points: 5 },
-    { id: 'proof', label: 'Au moins une preuve concrète', question: 'Y a-t-il au moins une preuve concrète (chiffre, référence nommée, réalisation, agrément) ?', points: 6 },
-    { id: 'distinct', label: 'Ce qui distingue de la concurrence', question: 'Ce qui distingue l’organisation de la concurrence est-il dit ?', points: 4 },
-    { id: 'action', label: 'Façon de passer à l’action', question: 'La façon de passer à l’action est-elle claire ?', points: 5 }
+  credibility: [
+    { id: 'proof', label: 'Preuve concrète (extrait vérifié)', question: 'Y a-t-il au moins une preuve concrète du sérieux de l’organisation : client, résultat, réalisation, distinction ou agrément nommés ? Copie-la mot pour mot dans proofQuote.', points: 7, quote: 'proofQuote' },
+    { id: 'distinct', label: 'Ce qui distingue l’organisation', question: 'Ce qui distingue l’organisation de ses concurrents est-il dit ?', points: 5 },
+    { id: 'people', label: 'Qui est derrière (personnes nommées)', question: 'Les dirigeants, l’équipe ou les experts sont-ils nommés, avec leur rôle ou leur parcours ?', points: 4 },
+    { id: 'track', label: 'Repères de solidité (ancienneté, taille, implantations)', question: 'La page donne-t-elle des repères de solidité : date de création ou ancienneté, taille de l’équipe, implantations ?', points: 4 }
   ],
-  convert: [
-    { id: 'visible', label: 'Action visible dès l’arrivée', question: 'L’action attendue (demande, achat, inscription, don, rendez-vous) est-elle visible dès l’arrivée ?', points: 5 },
-    { id: 'repeated', label: 'Action reprise plus bas', question: 'L’action est-elle reprise plus bas dans la page ?', points: 4 },
-    { id: 'next', label: 'Étape suivante annoncée', question: 'La page dit-elle ce qui se passe ensuite (délai, étape suivante) ?', points: 4 },
-    { id: 'friction', label: 'Freins levés', question: 'Les freins sont-ils levés (prix ou fourchette, garanties, questions fréquentes, engagement demandé) ?', points: 4 },
-    { id: 'single', label: 'Un seul chemin principal', question: 'Y a-t-il un seul chemin principal, sans actions concurrentes ?', points: 3 }
-  ],
-  reassure: [
-    { id: 'identity', label: 'Structure identifiée', question: 'La structure derrière la page est-elle identifiée (nom, statut, ancienneté) ?', points: 5 },
-    { id: 'people', label: 'Personnes nommées', question: 'Des personnes sont-elles nommées (direction, équipe) ?', points: 4 },
-    { id: 'proofs', label: 'Preuves vérifiables', question: 'Y a-t-il des preuves vérifiables (agréments, labels, autorités de tutelle, chiffres datés, références nommées) ?', points: 6 },
-    { id: 'commitments', label: 'Engagements concrets', question: 'Des engagements concrets sont-ils pris ?', points: 3 },
-    { id: 'contact', label: 'Coordonnées pour joindre la structure', question: 'Des coordonnées permettent-elles de joindre la structure ?', points: 2 }
-  ],
-  showcase: [
-    { id: 'context', label: 'Contexte posé (qui, quel besoin)', question: 'Le contexte est-il posé (qui, quel besoin) ?', points: 5 },
-    { id: 'work', label: 'Ce qui a été fait est décrit', question: 'Ce qui a été fait est-il décrit (méthode, moyens) ?', points: 5 },
-    { id: 'result', label: 'Résultat concret', question: 'Un résultat concret est-il donné (chiffre ou constat observable) ?', points: 6 },
-    { id: 'follow', label: 'Une suite proposée', question: 'Une suite est-elle proposée (témoignage, enseignement, lien vers un cas proche) ?', points: 4 }
+  skills: [
+    { id: 'proof', label: 'Preuve concrète (extrait vérifié)', question: 'Y a-t-il au moins une preuve concrète du savoir-faire : réalisation, client ou résultat nommés, chiffre ? Copie-la mot pour mot dans proofQuote.', points: 7, quote: 'proofQuote' },
+    { id: 'distinct', label: 'Ce qui distingue l’approche', question: 'Ce qui distingue l’approche ou la manière de faire de l’organisation est-il dit ?', points: 5 },
+    { id: 'how', label: 'Ce qui est fait et comment', question: 'La page dit-elle ce qui est fait et comment (prestations, étapes, livrables, outils) ?', points: 4 },
+    { id: 'needs', label: 'Besoins traités (à qui, quels problèmes)', question: 'La page dit-elle à qui ce savoir-faire s’adresse et à quels besoins ou problèmes il répond ?', points: 4 }
   ]
 };
+
+/**
+ * Grille du critère « sujet » déjà remplie pour cette grille : la grille de couverture n'a pas changé (« cover »
+ * avant le prompt v12, « inform » ensuite) ; une grille « present » (v12) ou un ancien objectif ne correspond plus.
+ */
+export function gridMatches(goalKey: string | undefined, grid: SubjectGrid): boolean {
+  return goalKey === grid || (grid === 'inform' && goalKey === 'cover');
+}
 
 /** Contenu qui répond à une question : le début de page est jugé comme une réponse directe */
 export function answersQuestion(role: PageRole): boolean {
@@ -81,7 +88,7 @@ export function answersQuestion(role: PageRole): boolean {
 }
 
 export function openingChecks(role: PageRole): Check[] {
-  return answersQuestion(role) ? OPENING_ANSWER_CHECKS : OPENING_OFFER_CHECKS;
+  return answersQuestion(role) ? OPENING_ANSWER_CHECKS : OPENING_PITCH_CHECKS;
 }
 
 export interface CheckResult {
@@ -109,8 +116,17 @@ export function answered(checks: Check[], answers: Record<string, boolean> | und
  * Points des cases cochées ; une case absente de la réponse compte comme non cochée. Une clé préfixée par son groupe
  * (« intent.need », écrite parfois par le modèle) vaut la case « need ».
  */
-export function scoreChecks(checks: Check[], answers: Record<string, boolean>): CheckResult {
-  const answer = (id: string) => answerOf(answers, id);
+export function scoreChecks(
+  checks: Check[],
+  answers: Record<string, boolean>,
+  /** Extrait d'une case `quote` retrouvé dans la page ; sans vérificateur, la case suit la réponse de l'IA */
+  quoteVerified?: (field: NonNullable<Check['quote']>) => boolean
+): CheckResult {
+  const answer = (id: string) => {
+    const check = checks.find((item) => item.id === id);
+    const value = answerOf(answers, id);
+    return check?.quote && quoteVerified && value === true ? quoteVerified(check.quote) : value;
+  };
   const passed = checks.filter((check) => answer(check.id) === true);
   return {
     earned: passed.reduce((sum, check) => sum + check.points, 0),
@@ -123,6 +139,12 @@ export function scoreChecks(checks: Check[], answers: Record<string, boolean>): 
 /** Mots du début de page où la phrase d'introduction doit se trouver */
 const OPENING_WORDS = 150;
 
+/** Preuve concrète citée par l'IA : comptée seulement si elle figure mot pour mot dans le contenu (20 caractères au moins) */
+export function proofQuoteVerified(content: string, quote: string | undefined): boolean {
+  const clean = quote?.trim() ?? '';
+  return clean.length >= 20 && normalizeQuote(content).includes(normalizeQuote(clean));
+}
+
 /** La phrase citée par l'IA figure-t-elle mot pour mot dans les 150 premiers mots du contenu ? */
 export function openingQuoteVerified(content: string, quote: string | undefined): boolean {
   const clean = quote?.trim() ?? '';
@@ -132,12 +154,13 @@ export function openingQuoteVerified(content: string, quote: string | undefined)
 }
 
 /** Questions envoyées à l'IA pour une page, sous forme d'identifiants à renseigner à vrai ou faux */
-export function checksPrompt(role: PageRole, goal: PageGoal): string {
+export function checksPrompt(role: PageRole): string {
   const lines = (group: string, checks: Check[]) => checks.map((check) => `- ${group}.${check.id} : ${check.question}`).join('\n');
+  const grid = subjectGridOf(role);
   return [
     lines('intent', INTENT_CHECKS),
     lines('opening', openingChecks(role)),
-    goal === 'direct' ? '' : lines('goal', GOAL_CHECKS[goal])
+    grid ? lines('goal', SUBJECT_CHECKS[grid]) : ''
   ]
     .filter(Boolean)
     .join('\n');

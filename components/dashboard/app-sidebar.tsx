@@ -17,11 +17,13 @@ import {
   Settings,
   Target,
   Link2,
+  ListChecks,
   TriangleAlert,
   User,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { GEO_ENABLED } from '@/core/domain/features'
 import { useProjects } from '@/components/providers/projects-provider'
 import { globalScore, type Project } from '@/lib/projects'
 import { ThemeToggle } from '@/components/dashboard/theme-toggle'
@@ -61,7 +63,8 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
     <aside
       aria-label="Navigation principale"
       className={cn(
-        'glass sticky top-0 z-30 flex h-dvh shrink-0 flex-col border-r border-r-sidebar-border text-sidebar-foreground transition-[width] duration-300',
+        // Bulle flottante : détachée des bords de l'écran, coins arrondis, ombre portée
+        'glass-panel sticky top-3 z-30 my-3 ml-3 flex h-[calc(100dvh-1.5rem)] shrink-0 flex-col overflow-hidden rounded-[28px] border text-sidebar-foreground shadow-[0_24px_60px_-24px_rgb(0_0_0/0.55)] transition-[width] duration-300',
         collapsed ? 'w-[72px]' : 'w-64',
       )}
     >
@@ -251,11 +254,13 @@ function ProjectEntry({
   const resultNav: NavItem[] = [
     { label: 'Synthèse', href: `${base}/synthese`, icon: ChartNoAxesColumn },
     { label: 'Anomalies', href: `${base}/global-issues`, icon: TriangleAlert },
+    { label: 'Plan d’action', href: `${base}/plan`, icon: ListChecks },
     { label: 'Sous-pages', href: `${base}/subpages`, icon: BookOpen },
     { label: 'SEO éditorial', href: `${base}/seo-editorial`, icon: PenTool },
     { label: 'Positionnement', href: `${base}/positionnement`, icon: Target },
     { label: 'Backlinks', href: `${base}/backlinks`, icon: Link2 },
-    { label: 'GEO', href: `${base}/geo`, icon: Bot },
+    // GEO mis de côté (GEO_ENABLED) : entrée masquée
+    ...(GEO_ENABLED ? [{ label: 'GEO', href: `${base}/geo`, icon: Bot }] : []),
   ]
 
   return (

@@ -1,27 +1,42 @@
 import { normalizeText } from './scoring/autocomplete-relevance';
 
 /**
- * Zones ciblées d'un projet (villes, départements, régions françaises, validées par l'API Géo officielle).
+ * Zones ciblées d'un projet : villes, départements et régions françaises (validés par l'API Géo officielle), pays
+ * (codes ISO, noms français), ou autre lieu saisi tel quel (« côte d'azur », « casablanca », « europe »).
  * Les recherches proposées par l'IA ne contiennent aucun lieu : au moment de la mesure, le nom de la zone est ajouté
  * à la fin de la recherche (« agence web » devient « agence web oise »). La position de l'internaute n'est pas
  * simulée : le paramètre de lieu de Google n'a pas montré d'effet mesurable sur les résultats.
  */
 export interface GeoZone {
-  /** Identifiant stable : `commune:31555`, `departement:28`, `region:76` */
+  /** Identifiant stable : `commune:31555`, `departement:28`, `region:76`, `pays:MA`, `lieu:cote-d-azur` */
   id: string;
-  kind: 'commune' | 'departement' | 'region';
-  /** Code INSEE (commune, département ou région) */
+  kind: GeoZoneKind;
+  /** Code INSEE (commune, département ou région), code ISO à deux lettres (pays), texte saisi (autre lieu) */
   code: string;
-  /** Nom officiel (« Toulouse », « Eure-et-Loir », « Occitanie ») */
+  /** Nom officiel (« Toulouse », « Eure-et-Loir », « Occitanie », « Maroc ») ou texte saisi */
   name: string;
-  /** Libellé affiché (« Dreux (28) », « Eure-et-Loir (28) », « Occitanie ») */
+  /** Libellé affiché (« Dreux (28) », « Eure-et-Loir (28) », « Occitanie », « Maroc ») */
   label: string;
   departement?: { code: string; name: string };
   region?: { code: string; name: string };
   /** Codes postaux d'une commune (une adresse de la page qui en contient un couvre la zone) */
   postalCodes?: string[];
-  /** Ville de référence : la commune, ou le chef-lieu du département ou de la région (couverture des adresses) */
-  city: { code: string; name: string; region: string; latitude: number; longitude: number };
+  /**
+   * Ville de référence : la commune, ou le chef-lieu du département ou de la région (couverture des adresses).
+   * Absente pour un pays ou un autre lieu.
+   */
+  city?: { code: string; name: string; region: string; latitude: number; longitude: number };
+}
+
+export type GeoZoneKind = 'commune' | 'departement' | 'region' | 'pays' | 'lieu';
+
+/** Types de zone acceptés par les routes d'enregistrement */
+export const GEO_ZONE_KINDS: readonly GeoZoneKind[] = ['commune', 'departement', 'region', 'pays', 'lieu'];
+
+/** Autre lieu saisi tel quel : 2 à 60 caractères, lettres, chiffres, espaces, apostrophes, tirets et points */
+export function cleanPlaceName(text: string): string | null {
+  const name = text.replace(/\s+/g, ' ').trim();
+  return name.length >= 2 && name.length <= 60 && /^[\p{L}\p{N}][\p{L}\p{N} '’.-]*$/u.test(name) ? name : null;
 }
 
 /** Zones au plus par projet : 3 zones × 3 recherches font déjà 9 recherches Google par page */

@@ -1,36 +1,65 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Search, ExternalLink, Sparkles, Check, CheckSquare, Square, FileText } from 'lucide-react'
+import { Search, ExternalLink, Sparkles, CheckSquare, Square, FileText } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
-import { useInspection } from '@/components/providers/inspection-provider'
+import { useInspection, useInspectionNavigation } from '@/components/providers/inspection-provider'
 import { useAudit } from '@/components/providers/audit-provider'
 import { useSettings } from '@/components/providers/settings-provider'
 import { AuditStateGate } from './audit-state-gate'
 import { type SubpageItem } from '@/lib/audit-data'
 import { LOW_SEARCH_POTENTIAL_ROLES } from '@/core/domain/scoring/page-role'
-import { PageRoleGoal } from './page-role-goal'
+import { PageRoleFamily } from './page-role-family'
+import { CustomizableTable, type ColumnSpec } from '@/components/table/customizable-table'
+import { TableLayoutFooter, TableLayoutToolbar } from '@/components/table/table-layout-controls'
+import { useTableLayout } from '@/components/table/use-table-layout'
+import { usePageMetricColumns } from '@/components/table/page-metrics'
+import type { TableColumn } from '@/lib/table-layout'
+import { SelectionBar, useSelectionToast } from '@/components/table/selection-bar'
+import { SelectionCheckbox, useRowSelection } from '@/components/table/use-row-selection'
+import { usePageBulkActions } from './use-page-bulk-actions'
 
 const PAGE_SIZE = 10
 
+/** Colonnes du tableau (largeurs par défaut) : ordre, affichage, épinglage, largeur et densité choisis par chacun */
+const SUBPAGE_COLUMNS: TableColumn[] = [
+  { id: 'select', label: 'Sélection', width: 56, fixed: true },
+  { id: 'url', label: 'URL', width: 300, minWidth: 160 },
+  { id: 'role', label: 'Rôle et famille', width: 240, minWidth: 190 },
+  { id: 'status', label: 'Statut HTTP', width: 130, minWidth: 96 },
+  { id: 'tech', label: 'Score tech', width: 120, minWidth: 96 },
+  { id: 'words', label: 'Texte', width: 120, minWidth: 96 },
+  { id: 'links', label: 'Maillage', width: 130, minWidth: 104 },
+  { id: 'queries', label: 'Requêtes notées', width: 240, minWidth: 140 },
+  { id: 'details', label: 'Détails', width: 100, minWidth: 88 },
+]
+
 export function SubpagesView({ projectId }: { projectId: string }) {
   const router = useRouter()
-  const { openInspection } = useInspection()
+  const { openInspection, activeId } = useInspection()
   const { audit, state, savePillars, auditDbId, refreshAudit } = useAudit()
   const { maxAiPages } = useSettings()
 
   const [subpages, setSubpages] = useState<SubpageItem[]>(audit?.subpages ?? [])
-  // Requêtes saisies à la main (identifiant de page vers requête), envoyées au lancement de l'analyse
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // Pages sélectionnées : actions de la barre flottante (analyse IA, fiches PDF, plan d'action)
+  const selection = useRowSelection()
+  const { selected: selectedIds, setSelected: setSelectedIds } = selection
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'indexable' | 'not-indexable'>('all')
   const [aiLaunched, setAiLaunched] = useState(false)
   const [launchError, setLaunchError] = useState<string | null>(null)
-  const [limitMessage, setLimitMessage] = useState<string | null>(null)
-  const limitText = `Limite atteinte : maximum ${maxAiPages} pages analysables par IA`
   const [currentPage, setCurrentPage] = useState(1)
+  // Barre d'actions sur la sélection : message après une action, fiches PDF et ajout au plan communs aux pages
+  const [toast, setToast] = useSelectionToast()
+  const bulk = usePageBulkActions({ projectId, audit, setToast })
+  // Métriques ajoutables (masquées par défaut), sauf celles que le tableau montre déjà
+  const metricColumns = usePageMetricColumns<SubpageItem>(audit, (page) => page.id, [
+    'm:role', 'm:family', 'm:http', 'm:tech', 'm:words', 'm:depth', 'm:inlinks', 'm:main-query',
+  ])
+  const tableColumns = useMemo(() => [...SUBPAGE_COLUMNS, ...metricColumns], [metricColumns])
+  const tableLayout = useTableLayout('sous-pages', tableColumns)
 
   useEffect(() => {
     if (audit?.subpages && audit.subpages.length > 0) {
@@ -44,28 +73,9 @@ export function SubpagesView({ projectId }: { projectId: string }) {
     }
   }, [audit?.subpages])
 
-  const toggleSelect = (id: string) => {
-    if (selectedIds.includes(id)) {
-      setSelectedIds(selectedIds.filter((item) => item !== id))
-      setLimitMessage(null)
-      return
-    }
-    if (selectedIds.length >= maxAiPages) {
-      setLimitMessage(limitText)
-      return
-    }
-    setLimitMessage(null)
-    setSelectedIds([...selectedIds, id])
-  }
-
   const toggleSelectAll = () => {
-    if (selectedIds.length === filteredPages.length) {
-      setSelectedIds([])
-      setLimitMessage(null)
-    } else {
-      setSelectedIds(filteredPages.slice(0, maxAiPages).map((p) => p.id))
-      setLimitMessage(filteredPages.length > maxAiPages ? limitText : null)
-    }
+    if (selectedIds.length === filteredPages.length) setSelectedIds([])
+    else setSelectedIds(filteredPages.map((p) => p.id))
   }
 
   const handleLaunchAi = async () => {
@@ -91,6 +101,9 @@ export function SubpagesView({ projectId }: { projectId: string }) {
     return true
   })
 
+  // Fiche à côté de la liste : ↑ ↓ et J / K parcourent les pages filtrées, dans leur ordre
+  useInspectionNavigation(filteredPages.map((page) => page.id))
+
   if (state !== 'SUCCESS' || !audit) return <AuditStateGate currentTitle="Subpages" />
 
   const overLimit = selectedIds.length > maxAiPages
@@ -105,6 +118,158 @@ export function SubpagesView({ projectId }: { projectId: string }) {
   const pagedPages = filteredPages.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
   const rangeStart = filteredPages.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
   const rangeEnd = Math.min(safePage * PAGE_SIZE, filteredPages.length)
+
+  const allSelected = selectedIds.length > 0 && selectedIds.length === filteredPages.length
+  // En-tête et cellule de chaque colonne, repris de l'ancien tableau
+  const columnCells: Record<string, Omit<ColumnSpec<SubpageItem>, keyof TableColumn>> = {
+    select: {
+      header: (
+        <button type="button" onClick={toggleSelectAll} aria-label="Tout sélectionner" className="flex items-center justify-center text-primary-ink">
+          {allSelected ? <CheckSquare className="size-5 fill-primary text-black" /> : <Square className="size-5 text-muted-foreground" />}
+        </button>
+      ),
+      cell: (page) => (
+        <SelectionCheckbox selection={selection} id={page.id} order={pagedPages.map((item) => item.id)} label={`Sélectionner ${page.path}`} />
+      ),
+    },
+    // URL : tronquée si trop longue, chemin complet au survol
+    url: {
+      rowHeader: true,
+      cell: (page) => (
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openInspection(page.id)}
+            title={page.path}
+            className="min-w-0 cursor-pointer truncate text-left text-base font-semibold text-foreground transition-colors hover:text-primary-ink"
+          >
+            {page.path}
+          </button>
+          <a
+            href={page.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Ouvrir ${page.path} dans un nouvel onglet`}
+            className="shrink-0 text-muted-foreground transition-colors hover:text-primary-ink"
+          >
+            <ExternalLink className="size-4" />
+          </a>
+        </div>
+      ),
+    },
+    // Rôle (modifiable, avec son origine) et famille qui en découle
+    role: {
+      cell: (page) => (
+        <PageRoleFamily
+          pageId={page.id}
+          path={page.path}
+          role={page.role}
+          roleSource={page.roleSource}
+          roleReason={page.roleReason}
+          family={page.family}
+          familyStale={page.familyStale}
+          variant="compact"
+          onError={setLaunchError}
+        />
+      ),
+    },
+    status: {
+      cell: (page) => (
+        <span
+          className={`inline-flex whitespace-nowrap rounded-full px-3 py-0.5 text-xs font-bold text-white ${
+            page.httpStatus >= 400 ? 'bg-[#ef4444]' : 'bg-[#12b10f]'
+          }`}
+        >
+          {page.statusLabel}
+        </span>
+      ),
+    },
+    tech: {
+      cell: (page) => (
+        <span
+          className={`inline-flex whitespace-nowrap rounded-full px-3 py-0.5 text-xs font-bold ${
+            page.techScore >= 80 ? 'bg-[#12b10f] text-white' : page.techScore >= 60 ? 'bg-primary text-primary-foreground' : 'bg-[#ef4444] text-white'
+          }`}
+        >
+          {page.techScore}/100
+        </span>
+      ),
+    },
+    words: {
+      cell: (page) => (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="whitespace-nowrap font-semibold text-foreground">{page.wordCount} mots</span>
+          <span
+            className={`size-2.5 rounded-full ${
+              page.wordCountStatus === 'good' ? 'bg-[#12b10f]' : page.wordCountStatus === 'warning' ? 'bg-[#eab308]' : 'bg-[#ef4444]'
+            }`}
+          />
+        </div>
+      ),
+    },
+    // Maillage : profondeur et liens entrants regroupés
+    links: {
+      cellClassName: 'whitespace-nowrap text-xs text-foreground',
+      header: <span title="Profondeur de clic depuis l'accueil · liens internes entrants">Maillage</span>,
+      cell: (page) => (
+        <span>
+          <span title={page.depth === 'Sitemap' ? 'Page atteinte seulement par le sitemap : aucun lien depuis les pages explorées' : 'Profondeur de clic'}>
+            {page.depth}
+          </span>
+          <span className="mx-1.5 text-muted-foreground">·</span>
+          <span title="Liens internes entrants" className="font-semibold">
+            {page.inlinks} lien{page.inlinks > 1 ? 's' : ''}
+          </span>
+        </span>
+      ),
+    },
+    // Requêtes notées : choisies par l'IA et Keyword Planner, modifiables dans le tiroir de la page
+    queries: {
+      cellClassName: 'text-sm text-foreground',
+      cell: (page) =>
+        page.querySet && page.querySet.length > 0 ? (
+          <span className="block min-w-0">
+            <strong className="block truncate">{page.querySet[0].query}</strong>
+            {page.querySet.length > 1 && (
+              <span className="block text-xs text-muted-foreground">
+                +{page.querySet.length - 1} requête{page.querySet.length > 2 ? 's' : ''}
+                {page.querySet.some((entry) => entry.volume !== undefined)
+                  ? ` · ${page.querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0).toLocaleString('fr-FR')}/mois`
+                  : ''}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">{page.isPillar ? 'Après l’analyse IA' : 'Page non analysée par l’IA'}</span>
+        ),
+    },
+    details: {
+      cell: (page) => (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openInspection(page.id)}
+            title="Inspecter la page"
+            aria-label={`Inspecter ${page.path}`}
+            className="cursor-pointer rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-shade-38 hover:text-foreground"
+          >
+            <FileText className="size-5" />
+          </button>
+          <a
+            href={page.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Visiter la page"
+            aria-label={`Visiter ${page.path}`}
+            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-shade-38 hover:text-primary-ink"
+          >
+            <ExternalLink className="size-4" />
+          </a>
+        </div>
+      ),
+    },
+  }
+  const columns: ColumnSpec<SubpageItem>[] = [...SUBPAGE_COLUMNS.map((column) => ({ ...column, ...columnCells[column.id] })), ...metricColumns]
 
   return (
     <div className="flex flex-col gap-6">
@@ -128,9 +293,6 @@ export function SubpagesView({ projectId }: { projectId: string }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="rounded-xl border border-[#eab308]/60 bg-tint-yellow-2 px-5 py-2 text-sm md:text-base font-bold text-primary-ink">
-              {selectedIds.length} / {maxAiPages} sélectionnées
-            </div>
             <ExportPdfButton />
           </div>
         </div>
@@ -196,37 +358,11 @@ export function SubpagesView({ projectId }: { projectId: string }) {
             </div>
           </div>
 
-          {/* Yellow Action Button: Lancer l'analyse IA */}
-          <button
-            type="button"
-            onClick={handleLaunchAi}
-            disabled={selectedIds.length < 1 || overLimit || aiLaunched}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm md:text-base font-bold text-primary-foreground shadow transition-transform hover:scale-[1.02] hover:bg-[#e0d100] active:scale-[0.98] disabled:opacity-50"
-          >
-            <Sparkles className="size-4" />
-            {aiLaunched ? 'Analyse en cours...' : 'Lancer l’analyse IA'}
-          </button>
         </div>
 
-        <div
-          role="progressbar"
-          aria-label="Pages sélectionnées pour l’analyse IA"
-          aria-valuenow={selectedIds.length}
-          aria-valuemin={0}
-          aria-valuemax={maxAiPages}
-          className="mt-4 h-1.5 overflow-hidden rounded-full bg-shade-33"
-        >
-          <div
-            className={`h-full rounded-full transition-all ${overLimit ? 'bg-[#ef4444]' : 'bg-primary'}`}
-            style={{ width: `${Math.min(100, (selectedIds.length / maxAiPages) * 100)}%` }}
-          />
-        </div>
-
-        {(limitMessage || overLimit || selectedIds.length < 1 || launchError) && (
+        {launchError && (
           <p role="status" className="mt-3 text-sm text-amber-ink">
-            {launchError ??
-              (overLimit ? limitText : limitMessage) ??
-              'Sélectionnez au moins 1 page pour lancer l’analyse.'}
+            {launchError}
           </p>
         )}
 
@@ -236,234 +372,31 @@ export function SubpagesView({ projectId }: { projectId: string }) {
           </p>
         )}
 
-        {/* Data Table */}
-        <div className="mt-6 overflow-x-auto">
-          {/* Largeurs fixes : les colonnes restent alignées quelle que soit la longueur des URL */}
-          <table className="w-full min-w-[1440px] table-fixed border-separate border-spacing-0 text-left">
-            <colgroup>
-              <col className="w-14" />
-              <col className="w-[300px]" />
-              <col className="w-[260px]" />
-              <col className="w-[150px]" />
-              <col className="w-[115px]" />
-              <col className="w-[120px]" />
-              <col className="w-[110px]" />
-              <col />
-              <col className="w-[120px]" />
-            </colgroup>
-            <thead>
-              <tr className="text-base text-foreground">
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal rounded-l-xl w-12">
-                  <button
-                    type="button"
-                    onClick={toggleSelectAll}
-                    aria-label="Tout sélectionner"
-                    className="flex items-center justify-center text-primary-ink"
-                  >
-                    {selectedIds.length > 0 && selectedIds.length === filteredPages.length ? (
-                      <CheckSquare className="size-5 fill-primary text-black" />
-                    ) : (
-                      <Square className="size-5 text-muted-foreground" />
-                    )}
-                  </button>
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  URL
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Rôle et objectif
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Badge
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Score tech
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Texte
-                </th>
-                <th
-                  scope="col"
-                  title="Profondeur de clic depuis l'accueil · liens internes entrants"
-                  className="bg-shade-38 px-4 py-4 font-normal"
-                >
-                  Maillage
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal">
-                  Requêtes notées
-                </th>
-                <th scope="col" className="bg-shade-38 px-4 py-4 font-normal rounded-r-xl">
-                  Page Details
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {pagedPages.map((page, index) => {
-                const isSelected = selectedIds.includes(page.id)
-                const isLast = index === pagedPages.length - 1
-                const cellClass = `px-4 py-4 align-middle ${isLast ? '' : 'border-b border-shade-33'}`
+        {/* Disposition du tableau : colonnes, densité, retour au défaut */}
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            Glissez sur les cases pour sélectionner plusieurs pages, Maj + clic pour une plage : les actions s’affichent
+            en bas. Glissez un en-tête pour déplacer sa colonne ; « Colonnes » ajoute n’importe quelle métrique.
+          </p>
+          <TableLayoutToolbar api={tableLayout} columns={tableColumns} />
+        </div>
 
-                return (
-                  <tr
-                    key={page.id}
-                    className={`transition-colors hover:bg-shade-28/60 ${
-                      isSelected ? 'bg-tint-yellow-4/30' : ''
-                    }`}
-                  >
-                    {/* Checkbox */}
-                    <td className={cellClass}>
-                      <button
-                        type="button"
-                        onClick={() => toggleSelect(page.id)}
-                        aria-label={`Sélectionner ${page.path}`}
-                        className="flex size-5 items-center justify-center rounded border border-shade-66 transition-colors focus-visible:outline-2 focus-visible:outline-ring"
-                      >
-                        {isSelected ? (
-                          <div className="flex size-5 items-center justify-center rounded bg-primary text-black">
-                            <Check className="size-3.5 stroke-[3]" />
-                          </div>
-                        ) : null}
-                      </button>
-                    </td>
+        <div className="mt-3">
+          <CustomizableTable
+            api={tableLayout}
+            columns={columns}
+            rows={pagedPages}
+            rowKey={(page) => page.id}
+            rowSelected={(page) => selectedIds.includes(page.id)}
+            rowActive={(page) => page.id === activeId}
+            onRowClick={(page) => openInspection(page.id)}
+            rowClassName={(page) => `transition-colors hover:bg-shade-28/60 ${selectedIds.includes(page.id) ? 'bg-tint-yellow-4/30' : ''}`}
+            ariaLabel="Pages explorées"
+          />
+        </div>
 
-                    {/* URL : tronquée si trop longue, chemin complet au survol */}
-                    <th scope="row" className={`${cellClass} font-normal`}>
-                      <div className="flex min-w-0 items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openInspection(page.id)}
-                          title={page.path}
-                          className="min-w-0 truncate text-left text-base font-semibold text-foreground transition-colors hover:text-primary-ink cursor-pointer"
-                        >
-                          {page.path}
-                        </button>
-                        <a
-                          href={page.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label={`Ouvrir ${page.path} dans un nouvel onglet`}
-                          className="shrink-0 text-muted-foreground transition-colors hover:text-primary-ink"
-                        >
-                          <ExternalLink className="size-4" />
-                        </a>
-                      </div>
-                    </th>
-
-                    {/* Rôle et objectif : modifiables, avec leur origine */}
-                    <td className={cellClass}>
-                      <PageRoleGoal
-                        pageId={page.id}
-                        path={page.path}
-                        role={page.role}
-                        roleSource={page.roleSource}
-                        roleReason={page.roleReason}
-                        goal={page.goal}
-                        goalSource={page.goalSource}
-                        goalStale={page.goalStale}
-                        variant="compact"
-                        onError={setLaunchError}
-                      />
-                    </td>
-
-                    {/* Badge HTTP */}
-                    <td className={cellClass}>
-                      <span
-                        className={`inline-flex whitespace-nowrap rounded-full px-3 py-0.5 text-xs font-bold text-white ${
-                          page.httpStatus >= 400 ? 'bg-[#ef4444]' : 'bg-[#12b10f]'
-                        }`}
-                      >
-                        {page.statusLabel}
-                      </span>
-                    </td>
-
-                    {/* Score technique */}
-                    <td className={cellClass}>
-                      <span
-                        className={`inline-flex whitespace-nowrap rounded-full px-3 py-0.5 text-xs font-bold ${
-                          page.techScore >= 80
-                            ? 'bg-[#12b10f] text-white'
-                            : page.techScore >= 60
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-[#ef4444] text-white'
-                        }`}
-                      >
-                        {page.techScore}/100
-                      </span>
-                    </td>
-
-                    {/* Texte (Word count) */}
-                    <td className={cellClass}>
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="whitespace-nowrap font-semibold text-foreground">{page.wordCount} mots</span>
-                        <span
-                          className={`size-2.5 rounded-full ${
-                            page.wordCountStatus === 'good'
-                              ? 'bg-[#12b10f]'
-                              : page.wordCountStatus === 'warning'
-                              ? 'bg-[#eab308]'
-                              : 'bg-[#ef4444]'
-                          }`}
-                        />
-                      </div>
-                    </td>
-
-                    {/* Maillage : profondeur et liens entrants regroupés */}
-                    <td className={`${cellClass} whitespace-nowrap text-xs text-foreground`}>
-                      <span title={page.depth === 'Sitemap' ? "Page atteinte seulement par le sitemap : aucun lien depuis les pages explorées" : "Profondeur de clic"}>{page.depth}</span>
-                      <span className="mx-1.5 text-muted-foreground">·</span>
-                      <span title="Liens internes entrants" className="font-semibold">
-                        {page.inlinks} lien{page.inlinks > 1 ? 's' : ''}
-                      </span>
-                    </td>
-
-                    {/* Requêtes notées : choisies par l'IA et Keyword Planner, modifiables dans le tiroir de la page */}
-                    <td className={`${cellClass} text-sm text-foreground`}>
-                      {page.querySet && page.querySet.length > 0 ? (
-                        <span>
-                          <strong>{page.querySet[0].query}</strong>
-                          {page.querySet.length > 1 && (
-                            <span className="block text-xs text-muted-foreground">
-                              +{page.querySet.length - 1} requête{page.querySet.length > 2 ? 's' : ''}
-                              {page.querySet.some((entry) => entry.volume !== undefined)
-                                ? ` · ${page.querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0).toLocaleString('fr-FR')}/mois`
-                                : ''}
-                            </span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          {page.isPillar ? 'Après l’analyse IA' : 'Page non analysée par l’IA'}
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Page Details / Actions */}
-                    <td className={cellClass}>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openInspection(page.id)}
-                          title="Inspecter la page (Page Details)"
-                          className="rounded-lg p-1.5 text-muted-foreground hover:bg-shade-38 hover:text-foreground transition-colors cursor-pointer"
-                        >
-                          <FileText className="size-5" />
-                        </button>
-                        <a
-                          href={page.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="Visiter la page"
-                          className="rounded-lg p-1.5 text-muted-foreground hover:bg-shade-38 hover:text-primary-ink transition-colors"
-                        >
-                          <ExternalLink className="size-4" />
-                        </a>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+        <div className="mt-4">
+          <TableLayoutFooter api={tableLayout} />
         </div>
 
         {/* Pagination Nav */}
@@ -494,6 +427,33 @@ export function SubpagesView({ projectId }: { projectId: string }) {
           </div>
         </div>
       </section>
+
+      {/* Actions sur la sélection : barre flottante en bas de l'écran */}
+      <SelectionBar
+        count={selectedIds.length}
+        noun={['page sélectionnée', 'pages sélectionnées']}
+        info={overLimit ? `${maxAiPages} au plus pour l’analyse IA` : `analyse IA : ${maxAiPages} au plus`}
+        onClear={() => setSelectedIds([])}
+        toast={toast}
+        actions={[
+          ...bulk.actionsFor(selectedIds),
+          {
+            id: 'ai',
+            label: aiLaunched ? 'Analyse en cours…' : 'Lancer l’analyse IA',
+            icon: <Sparkles className="size-4" aria-hidden="true" />,
+            primary: true,
+            busy: aiLaunched,
+            disabled: overLimit,
+            title: overLimit
+              ? `${maxAiPages} pages au plus pour l’analyse IA : retirez-en ${selectedIds.length - maxAiPages}`
+              : 'Ces pages deviennent les pages stratégiques analysées par l’IA',
+            onClick: handleLaunchAi,
+          },
+        ]}
+      />
+
+      {/* Fiches PDF des pages sélectionnées, imprimées ensemble (une page par fiche) */}
+      {bulk.sheets}
 
       {/* Inspection Sheet */}
       <PageInspectionSheet />

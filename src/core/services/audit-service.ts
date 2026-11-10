@@ -5,8 +5,9 @@ import { GoogleAutocomplete } from '@/adapters/secondary/search-data/google-auto
 import { keywordVolumeProvider } from '@/adapters/secondary/search-data/keyword-volume-provider';
 import { buildKeywordRows, keywordSeeds, matchEvidenceVerified, MAX_JUDGED_KEYWORDS, type KeywordResearch } from '../domain/keyword-research';
 import { buildQuerySet, MIN_SCORED_VOLUME } from '../domain/scoring/query-set';
+import { brandsFromDomains, classifyOpportunities, type KeywordOpportunities } from '../domain/keyword-opportunities';
 import { jobRegistry } from './job-registry';
-import type { PageRewrite } from '../domain/page-rewrite';
+import { isRewriteOutdated, type PageRewrite, type RewriteBasis } from '../domain/page-rewrite';
 import { llmGateway } from '@/adapters/secondary/llm/llm-gateway';
 import { RenderedSchema } from '@/adapters/secondary/crawler/rendered-schema';
 import { SiteCrawler } from '@/adapters/secondary/crawler/site-crawler';
@@ -16,6 +17,7 @@ import { GeoScoringEngine, geoMeasuredPoints } from '../domain/scoring/GeoScorin
 import { GlobalScoringEngine } from '../domain/scoring/GlobalScoringEngine';
 import { napMeasuredPoints, analyzeNap } from '../domain/scoring/nap';
 import { PageSpeedInsights } from '@/adapters/secondary/speed/pagespeed';
+import { ScreenshotStore, type ScreenshotKind, type ScreenshotMeta } from '@/adapters/secondary/speed/screenshot-store';
 import { CommonCrawlBacklinkIndex } from '@/adapters/secondary/backlinks/common-crawl-index';
 import { verifyReferringDomains } from '@/adapters/secondary/backlinks/backlink-verifier';
 import type { BacklinkIndexPort } from '../ports/backlink-index';
@@ -29,7 +31,8 @@ import { createSerpProvider } from '@/adapters/secondary/serp/create-serp-provid
 import { SerpBlockedError, type SerpProviderPort } from '../ports/serp-provider';
 import { buildSerpAnalysis } from '../domain/scoring/serp-analysis';
 import { classifyPageRole, hubChildKind, resolvePageRole } from '../domain/scoring/page-role';
-import { resolveGoal } from '../domain/scoring/page-goal';
+import { familyOf, subjectGridOf } from '../domain/scoring/page-family';
+import { gridMatches } from '../domain/scoring/editorial-checks';
 import {
   brandVariants,
   filterRelevantSuggestions,
@@ -59,7 +62,6 @@ import {
   GeoEvaluation,
   Issue,
   EditorialSignals,
-  PageGoal,
   PageRole,
   QueryCandidate,
   RawPageData,
@@ -332,8 +334,10 @@ export class AuditService {
     for (let i = 0; i < targets.length; i += 2) {
       await Promise.all(
         targets.slice(i, i + 2).map(async (page) => {
-          const vitals = await PageSpeedInsights.measure(page.url);
+          const { vitals, screenshots } = await PageSpeedInsights.analyze(page.url);
           if (vitals) page.coreWebVitals = vitals;
+          // Captures de la page (vue mobile) gardées sur le disque, montrées dans la fiche
+          if (screenshots) await ScreenshotStore.save(page.url, screenshots).catch(() => null);
           done++;
         })
       );
@@ -426,7 +430,7 @@ export class AuditService {
 
       const pageScore = GlobalScoringEngine.computePageScore(
         techRes.score,
-        editoRes.score,
+        editoRes.score ?? undefined,
         geoRes.score,
         isHomepage // Par défaut, la page d'accueil est pilier initial
       );
@@ -485,6 +489,9 @@ export class AuditService {
             redirectHops: page.redirectHops,
             redirectStatuses: page.redirectStatuses,
             techMeasuredPoints: 100 - (techRes.unmeasuredPoints ?? 0),
+            // Points par catégorie : disent où la page perd ses points (L'essentiel, Synthèse)
+            techBreakdown: techRes.breakdown,
+            techUnmeasured: techRes.unmeasuredBreakdown,
             discoveredVia: page.discoveredVia,
             linkGraphComplete: page.linkGraphComplete,
             domain: {
@@ -723,7 +730,7 @@ export class AuditService {
   public static async reanalyzePage(
     auditId: string,
     pageId: string,
-    options: { targetQuery?: string | null; force?: boolean } = {}
+    options: { targetQuery?: string | null; force?: boolean; reset?: boolean } = {}
   ) {
     const page = await prisma.page.findFirst({
       where: { id: pageId, auditId },
@@ -733,6 +740,10 @@ export class AuditService {
     if (!page.isPillar) throw new Error('Seules les pages piliers sont analysées par l’IA');
 
     let current: Page = page;
+    if (options.reset) {
+      current = await this.clearEditorial(page);
+      options = { ...options, force: true };
+    }
     if (options.targetQuery !== undefined) {
       const query = options.targetQuery?.trim() || null;
       current = await prisma.page.update({
@@ -761,6 +772,41 @@ export class AuditService {
   }
 
   /**
+   * Efface l'analyse éditoriale d'une page pour repartir de zéro : mots-clés de départ, problématique et requête
+   * conservés, requête visée, volumes et tri des mots-clés, requêtes notées choisies à la main, recherches hors page,
+   * réécriture. Gardés : rôle et objectif choisis par l'utilisateur, mesures Google (coûteuses, lues dans Google) et
+   * historique des positions. L'analyse est relancée aussitôt par `reanalyzePage`.
+   */
+  private static async clearEditorial(page: Page): Promise<Page> {
+    const {
+      keptQuery: _query,
+      keptCandidates: _candidates,
+      candidatesVersion: _version,
+      keptProblem: _problem,
+      querySetOverride: _override,
+      ...metrics
+    } = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
+    const {
+      editorial: _editorial,
+      editorialStatus: _status,
+      keywords: _keywords,
+      opportunities: _opportunities,
+      rewrite: _rewrite,
+      ...evaluation
+    } = this.parseJson<Record<string, unknown>>(page.aiEvaluationRaw) ?? {};
+    return prisma.page.update({
+      where: { id: page.id },
+      data: {
+        targetQuery: null,
+        targetQuerySource: 'AUTO',
+        analyzedHash: null,
+        metricsRaw: JSON.stringify(metrics),
+        aiEvaluationRaw: JSON.stringify(evaluation)
+      }
+    });
+  }
+
+  /**
    * Analyse éditoriale d'une page pilier : Autocomplete, LLM (repli heuristique si indisponible),
    * mise à jour du score, de la requête cible et des anomalies. Réutilise l'analyse précédente
    * si le contenu et la requête manuelle n'ont pas changé.
@@ -780,7 +826,6 @@ export class AuditService {
     const metrics = this.parseJson<{
       content?: ContentSnapshot;
       roleOverride?: PageRole;
-      goalOverride?: PageGoal;
       keptQuery?: string;
       keptCandidates?: QueryCandidate[];
       candidatesVersion?: number;
@@ -797,10 +842,13 @@ export class AuditService {
 
     const manualQuery =
       page.targetQuerySource === 'MANUAL' && page.targetQuery ? page.targetQuery : undefined;
-    const raw = this.toRawPage(page, snapshot, metrics?.roleOverride, metrics?.goalOverride);
-    // Rôle de départ, transmis à l'IA qui peut le corriger ; une correction manuelle prime sur tout
+    const raw = this.toRawPage(page, snapshot, metrics?.roleOverride);
+    // Rôle de départ, transmis à l'IA qui peut le corriger : choix manuel, sinon rôle retenu par l'IA à l'analyse
+    // précédente (il décide la grille demandée : sans lui, chaque analyse repartait du rôle détecté et la grille
+    // remplie ne correspondait plus au rôle corrigé), sinon rôle détecté
     const role = resolvePageRole({
       manual: metrics?.roleOverride,
+      ai: stored?.editorial?.role,
       detected: classifyPageRole({
         path: page.path,
         depth: page.depth,
@@ -810,8 +858,8 @@ export class AuditService {
         ...snapshot.roleSignals
       })
     }).role;
-    // Objectif de la page : choix de l'utilisateur, sinon celui du rôle ; il décide ce que l'IA juge et propose
-    const { goal } = resolveGoal({ manual: metrics?.goalOverride, role });
+    // Famille de la page, déduite du rôle : elle décide ce que l'IA juge et propose
+    const family = familyOf(role);
 
     // Requêtes génériques (sans la marque) pour toutes les pages, sauf contact et pages utilitaires : on y cherche
     // le site par son nom, l'IA déduit alors une requête de marque comme avant
@@ -842,7 +890,7 @@ export class AuditService {
       this.sha256(
         `${page.contentHash ?? ''}|${manualQuery ?? ''}|${kept ?? ''}|${llmGateway.cacheKey()}${
           metrics?.roleOverride ? `|${metrics.roleOverride}` : ''
-        }|goal:${goal}`
+        }|grid:${subjectGridOf(role) ?? family}`
       );
 
     if (
@@ -888,15 +936,16 @@ export class AuditService {
           const queries = buildQuerySet({
             target: knownTarget ? { query: knownTarget, confirmed: true, isBrand: !genericQueries } : undefined,
             research: keywords,
+            opportunities: raw.keywordOpportunities,
             candidates,
             override: raw.querySetOverride,
             brandOnly: !genericQueries
           }).map((entry) => entry.query);
-          evaluation = await llmGateway.evaluateEditorial({
+          const request: Parameters<typeof llmGateway.evaluateEditorial>[0] = {
             url: page.url,
             domain,
             role,
-            goal,
+            family,
             title: page.title ?? undefined,
             metaDescription: page.metaDescription ?? undefined,
             h1: page.h1 ?? undefined,
@@ -917,7 +966,20 @@ export class AuditService {
             siblingPages: pillars
               .filter((p) => p.id !== page.id)
               .map((p) => ({ url: p.url, title: p.title ?? undefined, h1: p.h1 ?? undefined }))
-          });
+          };
+          evaluation = await llmGateway.evaluateEditorial(request);
+          // Rôle corrigé par l'IA vers une autre grille du critère « sujet » (ex. offre devenue page institutionnelle) :
+          // la grille remplie ne vaut pas pour le rôle retenu. Seconde analyse avec ce rôle, une fois (un appel de plus) ;
+          // le rôle corrigé et sa justification sont gardés
+          const corrected = evaluation.role;
+          if (!metrics?.roleOverride && corrected && corrected !== role && subjectGridOf(corrected) !== subjectGridOf(role)) {
+            const second = await llmGateway.evaluateEditorial({ ...request, role: corrected, family: familyOf(corrected) });
+            evaluation = { ...second, role: corrected, roleReason: evaluation.roleReason };
+          } else if (!metrics?.roleOverride && !corrected) {
+            // Rôle de départ confirmé (l'IA ne renvoie un rôle que s'il diffère de celui reçu) : gardé avec la
+            // justification précédente, sinon une correction faite à une analyse antérieure se perdrait
+            evaluation = { ...evaluation, role, roleReason: stored?.editorial?.roleReason };
+          }
         } catch (err: any) {
           error = err?.message || 'Erreur inconnue du modèle';
           console.error(`[AuditService] Échec LLM pour ${page.url} : ${error}`);
@@ -1019,7 +1081,7 @@ export class AuditService {
         ...(geo ? { geoScore: geo.score } : {}),
         pageScore: GlobalScoringEngine.computePageScore(
           page.techScore ?? 0,
-          result.score,
+          result.score ?? undefined,
           geo?.score ?? page.geoScore ?? 0,
           true
         ),
@@ -1236,7 +1298,7 @@ export class AuditService {
 
   /**
    * Lieux à retirer des recherches proposées : toutes les zones du projet et des pages (avec leur département et
-   * leur région), puis la ville de la page repérée par l'IA. La zone est ajoutée au moment de la mesure.
+   * leur région, sauf les pays), puis la ville de la page repérée par l'IA. La zone est ajoutée au moment de la mesure.
    */
   private static async placeNamesFor(page: Page): Promise<string[]> {
     const audit = await prisma.audit.findUnique({
@@ -1248,7 +1310,10 @@ export class AuditService {
       ...Object.values(this.parseJson<Record<string, GeoZone>>(audit?.project.pageZonesRaw) ?? {})
     ];
     const city = this.parseJson<{ editorial?: EditorialEvaluation }>(page.aiEvaluationRaw)?.editorial?.search?.local?.city;
-    const names = zones.flatMap((zone) => [zone.name, zone.city.name, zone.departement?.name, zone.region?.name]);
+    // Un pays reste dans les recherches : il fait souvent partie du produit (« veste maroc », « maillot belgique »)
+    const names = zones
+      .filter((zone) => zone.kind !== 'pays')
+      .flatMap((zone) => [zone.name, zone.city?.name, zone.departement?.name, zone.region?.name]);
     return Array.from(new Set([...names, city].filter((name): name is string => Boolean(name))));
   }
 
@@ -1262,7 +1327,8 @@ export class AuditService {
       this.parseJson<GeoZone[]>(audit?.project.zonesRaw) ?? [],
       this.parseJson<Record<string, GeoZone>>(audit?.project.pageZonesRaw)?.[SiteCrawler.urlKey(page.url)]
     );
-    return zones.filter((zone): zone is GeoZone => Boolean(zone)).map((zone) => zone.name);
+    // Pays exclus : ils peuvent faire partie du produit, la mesure ne l'ajoute pas s'il est déjà dans la recherche
+    return zones.filter((zone): zone is GeoZone => Boolean(zone) && zone?.kind !== 'pays').map((zone) => zone.name);
   }
 
   /**
@@ -1620,7 +1686,8 @@ export class AuditService {
     return usage?.searches ?? 0;
   }
 
-  private static async countSerpSearches(count: number) {
+  /** Ajoute au compteur du jour des recherches envoyées à Google (mesure des pages, recherche des liens précis) */
+  public static async countSerpSearches(count: number) {
     if (count <= 0) return;
     const day = usageDay();
     await prisma.serpUsage.upsert({
@@ -1919,38 +1986,19 @@ export class AuditService {
     }
     const updated = await prisma.page.update({ where: { id: pageId }, data: { metricsRaw: JSON.stringify(metrics) } });
 
-    await this.rescoreEditorial(updated);
-
-    const audit = await prisma.audit.findUnique({ where: { id: auditId } });
-    if (audit?.status === 'COMPLETED') {
-      await this.refreshSiteCoherence(auditId, false);
-      await this.finalizeAudit(auditId);
-    }
-  }
-
-  /**
-   * Fixe l'objectif d'une page (null : retour à celui du rôle). « Aller droit au but » ne demande aucun nouvel avis de
-   * l'IA : la couverture du sujet sort simplement du score. Passer à « couvrir le sujet » ou « présenter et
-   * convaincre » alors que l'IA a jugé la page sous un autre objectif relance son analyse (une page, un appel), car
-   * ce qu'elle propose n'est pas le même.
-   */
-  public static async setPageGoal(auditId: string, pageId: string, goal: PageGoal | null) {
-    const page = await prisma.page.findFirst({ where: { id: pageId, auditId } });
-    if (!page) throw new Error('Page introuvable');
-
-    const metrics = this.parseJson<Record<string, unknown>>(page.metricsRaw) ?? {};
-    if (goal) metrics.goalOverride = goal;
-    else delete metrics.goalOverride;
-    const updated = await prisma.page.update({ where: { id: pageId }, data: { metricsRaw: JSON.stringify(metrics) } });
-
-    // Le cache de l'analyse tient compte de l'objectif : sans changement pour l'IA, seul le score est recalculé
-    const stored = this.parseJson<{ editorial?: EditorialEvaluation }>(updated.aiEvaluationRaw)?.editorial;
-    if (updated.isPillar && stored && goal !== 'direct') {
+    const evaluation = await this.rescoreEditorial(updated);
+    // Grille du critère « sujet » changée (couverture, crédibilité, savoir-faire) : la grille remplie par l'IA ne
+    // correspond plus, l'analyse de la page est relancée (une page, un appel). Une page non notée n'en a pas besoin.
+    if (
+      evaluation?.subjectGrid &&
+      evaluation.checks &&
+      !gridMatches(evaluation.checks.goalKey, evaluation.subjectGrid) &&
+      llmGateway.isConfigured()
+    ) {
       await this.reanalyzePage(auditId, pageId);
       return;
     }
 
-    await this.rescoreEditorial(updated);
     const audit = await prisma.audit.findUnique({ where: { id: auditId } });
     if (audit?.status === 'COMPLETED') {
       await this.refreshSiteCoherence(auditId, false);
@@ -2086,6 +2134,123 @@ export class AuditService {
   }
 
   /**
+   * Recherches hors page (bouton de l'onglet Mots-clés) : idées de Keyword Planner tirées des recherches déjà connues de
+   * la page, puis l'IA propose des recherches que les internautes tapent même si la page ne les emploie pas ; Keyword
+   * Planner donne leur volume et le code dit si la page peut les porter (keyword-opportunities.ts). Enregistré dans
+   * l'analyse (`opportunities`), sans effet sur la note : une recherche n'est notée que si l'utilisateur la coche.
+   */
+  public static async researchKeywordOpportunities(auditId: string, pageId: string): Promise<KeywordOpportunities> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, include: { audit: { select: { project: { select: { domain: true } } } } } });
+    if (!page) throw new Error('Page introuvable');
+    if (!llmGateway.isConfigured()) throw new Error('Aucun fournisseur IA configuré');
+    const provider = keywordVolumeProvider();
+    if (!provider) throw new Error('Aucune source de volumes configurée (Keyword Planner)');
+
+    const stored =
+      this.parseJson<{ editorial?: EditorialEvaluation; keywords?: KeywordResearch; serp?: SerpAnalysis; serpQueries?: SerpAnalysis[] }>(
+        page.aiEvaluationRaw
+      ) ?? {};
+    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; querySetOverride?: string[] }>(page.metricsRaw);
+    const snapshot = metrics?.content;
+    if (!snapshot) throw new Error('Contenu de la page non enregistré : relancez l’audit');
+    const domain = page.audit.project.domain;
+    const brands = brandVariants(domain);
+    const places = await this.placeNamesFor(page);
+    const search = stored.editorial?.search;
+
+    // Recherches déjà listées pour la page : requêtes notées, mots-clés, requête visée et recherches proposées
+    const known = [
+      ...new Set(
+        [
+          ...(stored.editorial?.querySet ?? []).map((entry) => entry.query),
+          ...(metrics?.querySetOverride ?? []),
+          ...(stored.keywords?.rows ?? []).map((row) => row.keyword),
+          search?.targetQuery.query ?? '',
+          ...(search?.candidates ?? []).map((candidate) => candidate.query)
+        ].filter(Boolean)
+      )
+    ];
+
+    // Idées voisines sans l'adresse de la page : avec elle, Keyword Planner ramène au contenu actuel. Source en échec :
+    // arrêt avant l'appel à l'IA (sans volumes, aucune recherche ne peut être jugée)
+    const seeds = known.filter((keyword) => isUsableSeed(keyword) && !containsBrand(keyword, brands));
+    const planner = seeds.length > 0 ? await provider.ideas(seeds, { limit: 60 }) : { seeds: [], ideas: [] };
+    const ideas = [...planner.seeds, ...planner.ideas]
+      .filter((idea) => idea.keyword && !containsBrand(idea.keyword, brands))
+      .sort((a, b) => (b.avgMonthlySearches ?? -1) - (a.avgMonthlySearches ?? -1));
+
+    // Autres pages du site, sans les traductions de celle-ci (même fin d'adresse), les plus courtes d'abord
+    const lastSegment = (path: string) => path.replace(/\/+$/, '').split('/').pop() ?? '';
+    const otherPages = (
+      await prisma.page.findMany({
+        where: { auditId, id: { not: page.id }, httpStatus: 200, isIndexable: true },
+        select: { url: true, path: true, title: true, h1: true }
+      })
+    )
+      .filter((other) => !lastSegment(page.path) || lastSegment(other.path) !== lastSegment(page.path))
+      .sort((a, b) => a.path.length - b.path.length);
+
+    // Résultats Google déjà relevés : titres pour l'IA, noms de domaine pour repérer les marques de tiers
+    const results = [...(stored.serpQueries ?? []), ...(stored.serp ? [stored.serp] : [])]
+      .filter((serp) => serp.status === 'DONE')
+      .flatMap((serp) => serp.results.slice(0, 10));
+    const thirdPartyBrands = brandsFromDomains(
+      results.map((result) => result.domain),
+      brands,
+      `${page.title ?? ''} ${page.h1 ?? ''}`
+    );
+
+    const proposal = await llmGateway.suggestOpportunities({
+      url: page.url,
+      domain,
+      role: metrics?.roleOverride ?? stored.editorial?.role,
+      problem: search?.problem,
+      title: page.title ?? undefined,
+      metaDescription: page.metaDescription ?? undefined,
+      h1: page.h1 ?? undefined,
+      headings: snapshot.headings,
+      excerpt: snapshot.excerpt,
+      sitePages: otherPages.map((other) => ({ url: other.path, title: (other.h1 || other.title || '').replace(/\s+/g, ' ').trim() })),
+      ideas: ideas.slice(0, 40).map((idea) => ({ keyword: idea.keyword, volume: idea.avgMonthlySearches })),
+      suggestions: search?.autocomplete?.suggestions ?? [],
+      serpTitles: [...new Set(results.map((result) => result.title))],
+      known,
+      zones: places
+    });
+    // Sans la marque du site ni les lieux ciblés, au moins deux mots porteurs de sens
+    const suggestions = proposal.suggestions
+      .filter((suggestion) => !containsBrand(suggestion.keyword, brands))
+      .map((suggestion) => ({ ...suggestion, keyword: stripPlaces(suggestion.keyword, places) }))
+      .filter((suggestion) => isUsableSeed(suggestion.keyword));
+    const volumes = suggestions.length > 0 ? await provider.volumes(suggestions.map((suggestion) => suggestion.keyword)) : [];
+
+    const opportunities: KeywordOpportunities = {
+      provider: provider.id,
+      simulated: provider.id === 'mock',
+      fetchedAt: new Date().toISOString(),
+      model: proposal.model,
+      rows: classifyOpportunities({
+        suggestions,
+        volumes: [...volumes, ...ideas],
+        page: { title: page.title, h1: page.h1, headings: snapshot.headings, text: snapshot.excerpt },
+        otherPages,
+        known,
+        thirdPartyBrands,
+        subject: search?.targetQuery.query || page.h1 || page.title || ''
+      })
+    };
+    // Analyse relue au moment d'enregistrer : l'appel à l'IA a pu durer pendant une autre modification de la page
+    const latest = await prisma.page.findUnique({ where: { id: page.id }, select: { aiEvaluationRaw: true } });
+    const updated = await prisma.page.update({
+      where: { id: page.id },
+      data: { aiEvaluationRaw: JSON.stringify({ ...(this.parseJson<Record<string, unknown>>(latest?.aiEvaluationRaw) ?? {}), opportunities }) }
+    });
+    // Recherches déjà cochées : leur volume entre dans les poids des requêtes notées
+    if (metrics?.querySetOverride?.length) await this.rescoreEditorial(updated);
+    return opportunities;
+  }
+
+  /**
    * Fixe les requêtes notées d'une page (null : retour au choix automatique, par les volumes). Note recalculée sans
    * l'IA ; l'intention d'une requête ajoutée sera jugée à la prochaine analyse de la page.
    */
@@ -2105,10 +2270,38 @@ export class AuditService {
   }
 
   /**
-   * Réécriture proposée des titres et sections d'une page par l'IA (un appel), selon son objectif, avec la requête
-   * principale et les recherches secondaires de la couverture des recherches. Enregistrée dans l'analyse (`rewrite`),
-   * sans effet sur la note ; la proposition existante est rendue telle quelle si rien n'a changé, sauf `force`.
+   * Réécriture proposée du Title, de la méta, des titres et sections d'une page par l'IA (un appel), selon son objectif,
+   * avec les requêtes notées (cochées) : la plus lourde en requête principale, les autres en recherches secondaires.
+   * Enregistrée dans l'analyse (`rewrite`), sans effet sur la note ; la proposition existante est rendue telle quelle si
+   * rien n'a changé (contenu, objectif, requêtes notées), sauf `force`.
    */
+  /** Capture PageSpeed d'une page de l'audit (dernière mesure de son adresse), null si aucune */
+  public static async pageScreenshot(auditId: string, pageId: string): Promise<{ configured: boolean; meta: ScreenshotMeta | null }> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, select: { url: true } });
+    if (!page) throw new Error('Page introuvable');
+    return { configured: PageSpeedInsights.isConfigured(), meta: await ScreenshotStore.meta(page.url) };
+  }
+
+  public static async pageScreenshotImage(auditId: string, pageId: string, kind: ScreenshotKind) {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, select: { url: true } });
+    if (!page) throw new Error('Page introuvable');
+    return ScreenshotStore.image(page.url, kind);
+  }
+
+  /**
+   * Nouvelle capture de la page par PageSpeed Insights (mesure de laboratoire, vue mobile, 20 à 60 s). Seules les
+   * captures sont gardées : les Core Web Vitals de l'audit, et donc la note, ne changent pas.
+   */
+  public static async capturePageScreenshot(auditId: string, pageId: string): Promise<ScreenshotMeta> {
+    const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, select: { url: true } });
+    if (!page) throw new Error('Page introuvable');
+    if (!PageSpeedInsights.isConfigured()) throw new Error('Clé PageSpeed Insights absente (PAGESPEED_API_KEY)');
+    const { screenshots } = await PageSpeedInsights.analyze(page.url);
+    const meta = screenshots ? await ScreenshotStore.save(page.url, screenshots) : null;
+    if (!meta) throw new Error('PageSpeed Insights n’a pas renvoyé de capture pour cette page');
+    return meta;
+  }
+
   public static async proposeRewrite(auditId: string, pageId: string, options: { force?: boolean } = {}): Promise<PageRewrite> {
     const page = await prisma.page.findFirst({ where: { id: pageId, auditId }, include: { audit: { select: { project: { select: { domain: true } } } } } });
     if (!page) throw new Error('Page introuvable');
@@ -2117,7 +2310,7 @@ export class AuditService {
     const stored = this.parseJson<Record<string, unknown> & { editorial?: EditorialEvaluation; keywords?: KeywordResearch; rewrite?: PageRewrite }>(
       page.aiEvaluationRaw
     ) ?? {};
-    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; goalOverride?: PageGoal }>(page.metricsRaw);
+    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole }>(page.metricsRaw);
     const snapshot = metrics?.content;
     if (!snapshot) throw new Error('Contenu de la page non enregistré : relancez l’audit');
 
@@ -2133,19 +2326,19 @@ export class AuditService {
         ...snapshot.roleSignals
       })
     }).role;
-    const { goal } = resolveGoal({ manual: metrics?.goalOverride, role });
+    const family = familyOf(role);
     // Requêtes notées, de la plus lourde à la plus légère : la première sert de requête principale
     const querySet = [...(stored.editorial?.querySet ?? [])].sort((a, b) => b.weight - a.weight);
     const principal = querySet[0]?.query ?? stored.editorial?.search?.targetQuery.query ?? page.targetQuery ?? page.h1 ?? page.title ?? '';
-    const basedOn = { contentHash: page.contentHash ?? '', goal, principal };
-    if (!options.force && stored.rewrite && JSON.stringify(stored.rewrite.basedOn) === JSON.stringify(basedOn)) return stored.rewrite;
+    const basedOn: RewriteBasis = { contentHash: page.contentHash ?? '', family, principal, queries: querySet.map((entry) => entry.query) };
+    if (!options.force && stored.rewrite && !isRewriteOutdated(stored.rewrite.basedOn, basedOn)) return stored.rewrite;
 
     const secondaries = querySet.slice(1).map((entry) => ({ keyword: entry.query }));
     const proposal = await llmGateway.proposeRewrite({
       url: page.url,
       domain: page.audit.project.domain,
       role,
-      goal,
+      family,
       title: page.title ?? undefined,
       metaDescription: page.metaDescription ?? undefined,
       h1: page.h1 ?? undefined,
@@ -2185,10 +2378,10 @@ export class AuditService {
       serpQueries?: SerpAnalysis[];
       geo?: GeoEvaluation;
     }>(page.aiEvaluationRaw);
-    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole; goalOverride?: PageGoal }>(page.metricsRaw);
-    if (!page.isPillar || !stored?.editorial || !metrics?.content) return;
+    const metrics = this.parseJson<{ content?: ContentSnapshot; roleOverride?: PageRole }>(page.metricsRaw);
+    if (!page.isPillar || !stored?.editorial || !metrics?.content) return undefined;
 
-    const raw = this.toRawPage(page, metrics.content, metrics.roleOverride, metrics.goalOverride);
+    const raw = this.toRawPage(page, metrics.content, metrics.roleOverride);
     const result = EditorialScoringEngine.calculate(
       raw,
       stored.editorial,
@@ -2203,7 +2396,7 @@ export class AuditService {
       data: {
         editorialScore: result.score,
         ...(geo ? { geoScore: geo.score } : {}),
-        pageScore: GlobalScoringEngine.computePageScore(page.techScore ?? 0, result.score, geoScore, true),
+        pageScore: GlobalScoringEngine.computePageScore(page.techScore ?? 0, result.score ?? undefined, geoScore, true),
         // Évaluation enregistrée avec les mesures appliquées (cannibalisation mesurée, confiance de la requête)
         aiEvaluationRaw: JSON.stringify({
           ...this.parseJson<Record<string, unknown>>(page.aiEvaluationRaw),
@@ -2232,6 +2425,7 @@ export class AuditService {
         }))
       });
     }
+    return result.evaluation;
   }
 
   /**
@@ -2281,7 +2475,7 @@ export class AuditService {
   }
 
   /** Reconstitue le RawPageData minimal requis par les moteurs de scoring à partir de la base */
-  private static toRawPage(page: Page, snapshot: ContentSnapshot, roleOverride?: PageRole, goalOverride?: PageGoal): RawPageData {
+  private static toRawPage(page: Page, snapshot: ContentSnapshot, roleOverride?: PageRole): RawPageData {
     return {
       url: page.url,
       path: page.path,
@@ -2315,8 +2509,8 @@ export class AuditService {
       editorialSignals: snapshot.signals,
       roleSignals: snapshot.roleSignals,
       roleOverride,
-      goalOverride,
       keywordResearch: this.parseJson<{ keywords?: KeywordResearch }>(page.aiEvaluationRaw)?.keywords,
+      keywordOpportunities: this.parseJson<{ opportunities?: KeywordOpportunities }>(page.aiEvaluationRaw)?.opportunities,
       querySetOverride: this.parseJson<{ querySetOverride?: string[] }>(page.metricsRaw)?.querySetOverride
     };
   }

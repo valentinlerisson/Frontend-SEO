@@ -3,10 +3,12 @@ import { AuditService } from '@/core/services/audit-service';
 
 /**
  * Ré-analyse éditoriale d'une page pilier.
- * Corps : { targetQuery?: string | null, force?: boolean }
+ * Corps : { targetQuery?: string | null, force?: boolean, reset?: boolean }
  *  - targetQuery texte : requête cible manuelle (prioritaire sur la détection IA)
  *  - targetQuery null : retour à la détection automatique
- *  - targetQuery absent : requête inchangée
+ *  - targetQuery absent : requête inchangée
+ *  - reset : analyse éditoriale effacée (mots-clés, choix des requêtes notées, recherches hors page, réécriture),
+ *    puis relancée ; rôle, objectif et mesures Google gardés
  */
 export async function POST(
   req: NextRequest,
@@ -16,7 +18,7 @@ export async function POST(
     const { auditId, pageId } = await params;
     const body = await req.json().catch(() => ({}));
 
-    const { targetQuery, force } = body as { targetQuery?: unknown; force?: unknown };
+    const { targetQuery, force, reset } = body as { targetQuery?: unknown; force?: unknown; reset?: unknown };
     if (targetQuery !== undefined && targetQuery !== null && typeof targetQuery !== 'string') {
       return NextResponse.json({ error: 'targetQuery doit être une chaîne ou null' }, { status: 400 });
     }
@@ -26,7 +28,8 @@ export async function POST(
 
     await AuditService.reanalyzePage(auditId, pageId, {
       targetQuery: targetQuery as string | null | undefined,
-      force: force === true
+      force: force === true,
+      reset: reset === true
     });
 
     return NextResponse.json({ success: true });

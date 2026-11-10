@@ -1,7 +1,17 @@
+import { GEO_ENABLED } from '../features';
+
+/**
+ * Poids des piliers dans la note globale : 40 % technique, 35 % éditorial, 25 % GEO. GEO mis de côté (`GEO_ENABLED`) :
+ * 40 et 35 ramenés à 100, soit 53,3 % et 46,7 %.
+ */
+export const PILLAR_WEIGHTS: { tech: number; editorial: number; geo: number } = GEO_ENABLED
+  ? { tech: 0.4, editorial: 0.35, geo: 0.25 }
+  : { tech: 0.4 / 0.75, editorial: 0.35 / 0.75, geo: 0 };
+
 export class GlobalScoringEngine {
   /**
    * Calcule le score unitaire d'une page
-   * Si la page est pilier, c'est la moyenne des 3 scores
+   * Si la page est pilier, c'est la moyenne des 3 scores (des 2 scores technique et éditorial, GEO mis de côté)
    * Si non-pilier, son score affiché correspond au score technique seul
    */
   public static computePageScore(
@@ -10,6 +20,9 @@ export class GlobalScoringEngine {
     geoScore: number | undefined,
     isPillar: boolean
   ): number {
+    if (isPillar && editorialScore !== undefined && !GEO_ENABLED) {
+      return Math.round((techScore + editorialScore) / 2);
+    }
     if (isPillar && editorialScore !== undefined && geoScore !== undefined) {
       return Math.round((techScore + editorialScore + geoScore) / 3);
     }
@@ -18,7 +31,7 @@ export class GlobalScoringEngine {
 
   /**
    * Calcule le score global consolidé du projet :
-   * 40% Technique (toutes pages) + 35% Éditorial (piliers) + 25% GEO (piliers)
+   * 40% Technique (toutes pages) + 35% Éditorial (piliers) + 25% GEO (piliers), voir PILLAR_WEIGHTS
    */
   public static computeProjectScore(
     pages: Array<{
@@ -65,7 +78,9 @@ export class GlobalScoringEngine {
     const geoAvg =
       evaluatedGeo.length > 0 ? weighted(evaluatedGeo, (p) => p.geoScore ?? 0, (p) => p.geoMeasured) : techAvg;
 
-    const overallScore = Math.round(0.4 * techAvg + 0.35 * editorialAvg + 0.25 * geoAvg);
+    const overallScore = Math.round(
+      PILLAR_WEIGHTS.tech * techAvg + PILLAR_WEIGHTS.editorial * editorialAvg + PILLAR_WEIGHTS.geo * geoAvg
+    );
 
     return {
       overallScore,

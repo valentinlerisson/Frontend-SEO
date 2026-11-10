@@ -40,7 +40,7 @@ export class SerperApiSerp implements SerpProviderPort {
     options: { pages?: number; start?: number; domain?: string; fresh?: boolean; location?: SerpLocation } = {}
   ): Promise<{ results: SerpResult[]; features?: SerpFeatures; requests: number }> {
     const pages = Math.max(1, Math.min(3, options.pages ?? (Number(process.env.SERP_PAGES) || 1)));
-    const start = Math.max(0, Math.min(2, options.start ?? 0));
+    const start = Math.max(0, Math.min(9, options.start ?? 0));
     const domain = (options.domain ?? '').toLowerCase().replace(/^www\./, '');
     const location = options.location?.name ?? '';
     const cacheFile = this.cacheFile(query, pages, domain, start, location);

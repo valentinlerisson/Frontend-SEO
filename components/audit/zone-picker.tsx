@@ -4,15 +4,22 @@ import { useEffect, useId, useState } from 'react'
 import { Loader2, MapPin } from 'lucide-react'
 import type { GeoZone } from '@/core/domain/zones'
 
-const KIND_LABEL: Record<GeoZone['kind'], string> = { commune: 'Ville', departement: 'Département', region: 'Région' }
+const KIND_LABEL: Record<GeoZone['kind'], string> = {
+  commune: 'Ville',
+  departement: 'Département',
+  region: 'Région',
+  pays: 'Pays',
+  lieu: 'Autre lieu',
+}
 
 /**
- * Recherche d'une zone (ville, code postal, numéro ou nom de département, région) dans l'API Géo officielle.
- * Le nom de la zone choisie est ajouté à la fin des recherches Google (« agence web eure-et-loir »).
+ * Recherche d'une zone : ville, code postal, numéro ou nom de département, région (API Géo officielle), pays, ou la
+ * saisie elle-même comme autre lieu. Le nom de la zone choisie est ajouté à la fin des recherches Google
+ * (« agence web eure-et-loir », « veste coupe vent belgique »).
  */
 export function ZonePicker({
   onPick,
-  placeholder = 'Ville, code postal, département ou région',
+  placeholder = 'Ville, département, région, pays ou autre lieu',
   disabled = false,
 }: {
   onPick: (zone: GeoZone) => void
@@ -49,7 +56,7 @@ export function ZonePicker({
   }, [text])
 
   return (
-    <div className="relative w-full max-w-sm">
+    <div className="relative w-full max-w-md">
       <label htmlFor={inputId} className="sr-only">
         Ajouter une zone
       </label>
@@ -86,7 +93,11 @@ export function ZonePicker({
                   {zone.label} <span className="font-normal text-muted-foreground">· {KIND_LABEL[zone.kind]}</span>
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {zone.kind === 'commune' ? zone.region?.name ?? '' : `Ajouté aux recherches : « … ${zone.name.toLowerCase()} »`}
+                  {zone.kind === 'commune'
+                    ? zone.region?.name ?? ''
+                    : zone.kind === 'lieu'
+                      ? `Tel que saisi, ajouté aux recherches : « … ${zone.name.toLowerCase()} »`
+                      : `Ajouté aux recherches : « … ${zone.name.toLowerCase()} »`}
                 </span>
               </button>
             </li>

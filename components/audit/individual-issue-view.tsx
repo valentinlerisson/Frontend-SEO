@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { ImpactBadge } from './impact-badge'
 import Link from 'next/link'
-import { ChevronLeft, Search, FileText, ExternalLink } from 'lucide-react'
+import { ChevronLeft, Search, FileText, ExternalLink, ListChecks, Plus } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { useInspection } from '@/components/providers/inspection-provider'
@@ -11,6 +11,8 @@ import { getInspectionTarget } from '@/lib/issue-routing'
 import { getIssueColumns } from './issue-metrics'
 import { useAudit } from '@/components/providers/audit-provider'
 import { AuditStateGate } from './audit-state-gate'
+import { useFixPlan } from './use-fix-plan'
+import { FIX_STATUS_LABEL } from '@/core/domain/fix-plan'
 
 export function IndividualIssueView({
   projectId,
@@ -22,6 +24,8 @@ export function IndividualIssueView({
   const { openInspection } = useInspection()
   const { audit, state } = useAudit()
   const [searchQuery, setSearchQuery] = useState('')
+  const fixPlan = useFixPlan(projectId)
+  const [planNotice, setPlanNotice] = useState<string | null>(null)
 
   if (state !== 'SUCCESS' || !audit) return <AuditStateGate currentTitle="Issues & Tips" />
 
@@ -48,6 +52,12 @@ export function IndividualIssueView({
   const target = getInspectionTarget(issue)
   const columns = getIssueColumns(issue)
   const impactedUrls = issue.impactedUrls || []
+  // Pages de l'anomalie pas encore dans le plan d'action (une tâche par page)
+  const missingFromPlan = impactedUrls.filter((item) => !fixPlan.statusOf(issue.code, item.fullUrl))
+  const addToPlan = async (urls: string[]) => {
+    const added = await fixPlan.add(urls.map((url) => ({ code: issue.code, url })))
+    setPlanNotice(added > 0 ? `${added} tâche${added > 1 ? 's' : ''} ajoutée${added > 1 ? 's' : ''} au plan d’action.` : null)
+  }
   const filteredUrls = impactedUrls.filter(
     (item) =>
       item.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -97,9 +107,28 @@ export function IndividualIssueView({
               />
             </div>
 
+            <button
+              type="button"
+              disabled={fixPlan.loading || missingFromPlan.length === 0}
+              onClick={() => addToPlan(missingFromPlan.map((item) => item.fullUrl))}
+              className="inline-flex items-center gap-2 rounded-xl border border-shade-44 px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ListChecks className="size-4" aria-hidden="true" />
+              {missingFromPlan.length === 0
+                ? 'Toutes les pages sont dans le plan'
+                : `Ajouter ${missingFromPlan.length === 1 ? 'la page' : `les ${missingFromPlan.length} pages`} au plan`}
+            </button>
             <ExportPdfButton />
           </div>
         </div>
+        {planNotice && (
+          <p role="status" className="mt-3 text-sm text-green-soft">
+            {planNotice}{' '}
+            <Link href={`/projets/${projectId}/plan`} className="font-semibold text-primary-ink hover:underline">
+              Ouvrir le plan
+            </Link>
+          </p>
+        )}
 
         {/* Issue Explanation Box */}
         <div className="mt-6 rounded-xl border border-shade-3e bg-shade-1c p-5">
@@ -132,6 +161,9 @@ export function IndividualIssueView({
                     {col.header}
                   </th>
                 ))}
+                <th scope="col" className="bg-shade-38 px-6 py-4 font-normal">
+                  Plan d’action
+                </th>
                 <th scope="col" className="bg-shade-38 px-6 py-4 font-normal rounded-r-xl">
                   Page Details
                 </th>
@@ -140,7 +172,7 @@ export function IndividualIssueView({
             <tbody>
               {filteredUrls.length === 0 ? (
                 <tr>
-                  <td colSpan={columns.length + 2} className="py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={columns.length + 3} className="py-10 text-center text-sm text-muted-foreground">
                     Aucune URL trouvée pour cette recherche.
                   </td>
                 </tr>
@@ -165,6 +197,25 @@ export function IndividualIssueView({
                           {col.render(item)}
                         </td>
                       ))}
+                      <td className={cellClass}>
+                        {(() => {
+                          const status = fixPlan.statusOf(issue.code, item.fullUrl)
+                          return status ? (
+                            <Link href={`/projets/${projectId}/plan`} className="text-sm text-foreground hover:underline">
+                              {FIX_STATUS_LABEL[status]}
+                            </Link>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={fixPlan.loading}
+                              onClick={() => addToPlan([item.fullUrl])}
+                              className="inline-flex items-center gap-1 rounded-lg border border-shade-44 px-2.5 py-1 text-xs font-semibold text-foreground hover:border-primary disabled:opacity-50"
+                            >
+                              <Plus className="size-3.5" aria-hidden="true" /> Ajouter
+                            </button>
+                          )
+                        })()}
+                      </td>
                       <td className={cellClass}>
                         <div className="flex items-center gap-3">
                           <button
