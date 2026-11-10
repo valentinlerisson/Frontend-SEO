@@ -1,12 +1,14 @@
-import { CriterionPoints, EditorialCriterion, EditorialEvaluation, Issue, PageRole, RawPageData, SerpAnalysis } from '../types';
+import { CriterionPoints, EditorialCriterion, EditorialEvaluation, Issue, PageFamily, PageRole, RawPageData, SerpAnalysis } from '../types';
 import { isSameQuery, normalizeText } from './autocomplete-relevance';
 import { classifyPageRole, resolvePageRole } from './page-role';
 import { measureHotZones } from './hot-zones';
 import { buildQuerySet, cannibalFromSerp, weightedAverage, type QuerySetMeasure } from './query-set';
 import { serpForQuery } from './query-candidates';
-import { GOAL_CRITERION, judgesProof, resolveGoal } from './page-goal';
+import { familyOf, presentCriterion, subjectGridOf } from './page-family';
+import { staleMentions } from './freshness';
 import { evaluateContentQuality, QUALITY_MAX, readabilityPoints } from './content-quality';
-import { answered, answerOf, GOAL_CHECKS, INTENT_CHECKS, openingChecks, openingQuoteVerified, queryJudged, scoreChecks } from './editorial-checks';
+import { SNIPPET_REWRITE_STEP } from '../page-rewrite';
+import { answered, gridMatches, INTENT_CHECKS, SUBJECT_CHECKS, openingChecks, openingQuoteVerified, proofQuoteVerified, queryJudged, scoreChecks } from './editorial-checks';
 
 export class EditorialScoringEngine {
   public static calculate(
@@ -16,7 +18,12 @@ export class EditorialScoringEngine {
     serp?: SerpAnalysis,
     /** Tous les relevés Google de la page : concurrence entre pages mesurée pour chaque requête notée */
     serps: SerpAnalysis[] = []
-  ): { score: number; issues: Issue[]; evaluation?: EditorialEvaluation } {
+  ): {
+    /** Note sur 100 ; null pour une page non notée (contact, légale, utilitaire), exclue de la note éditoriale */
+    score: number | null;
+    issues: Issue[];
+    evaluation?: EditorialEvaluation;
+  } {
     const issues: Issue[] = [];
 
     // Pénalité bloquante : 4xx/5xx ou noindex = score 0 immédiat
@@ -58,21 +65,22 @@ export class EditorialScoringEngine {
       })
     }).role;
     const eeatApplicable = role === 'article';
-    // Objectif « aller droit au but » : le sujet n'a pas à être couvert, ces 20 points sortent du dénominateur
-    const { goal } = resolveGoal({ manual: page.goalOverride, role });
-    const coversTopic = goal !== 'direct';
-    const evalData = this.withMeasurements(baseEval, role, page, serp, serps);
+    // Famille déduite du rôle : informer (couverture du sujet), présenter (présentation et preuves) ou non notée
+    // (contact, légal, utilitaire : hors note éditoriale, les constats restent affichés)
+    const family = familyOf(role);
+    const scored = family !== 'unscored';
+    const evalData: EditorialEvaluation = { ...this.withMeasurements(baseEval, role, page, serp, serps), family, subjectGrid: subjectGridOf(role) ?? undefined };
 
     // Requêtes notées (volumes Keyword Planner, sinon mots-clés choisis par l'IA en lisant la page) : intention et
     // couverture sont toujours jugées. Analyse antérieure sans groupe : ancienne règle de la requête seulement déduite
     const queryConfirmed = evalData.querySet?.length ? true : queryJudged(evalData.search);
 
     // Qualité du contenu (15 pts) : extraits proposés par l'IA, comptés seulement s'ils figurent mot pour mot dans la
-    // page. Notée seulement pour l'objectif « couvrir le sujet » : pour les autres objectifs, les preuves (chiffres,
-    // références, cas) sont déjà jugées par le critère de l'objectif, et une page de présentation serait pénalisée
-    // deux fois. Non mesurée sur une analyse antérieure à la demande d'extraits (aucun point compté au hasard).
+    // page. Notée seulement pour la famille « informer » : une page qui présente a sa preuve jugée dans « Présentation
+    // et preuves », et serait pénalisée deux fois. Non mesurée sur une analyse antérieure à la demande d'extraits
+    // (aucun point compté au hasard).
     const quality = evalData.quality;
-    const qualityApplicable = goal === 'cover' && role !== 'contact' && role !== 'utility';
+    const qualityApplicable = family === 'inform';
     if (qualityApplicable && quality && quality.informationGain.originalDataQuote !== undefined) {
       const measured = evaluateContentQuality({
         content: page.bodyText,
@@ -90,16 +98,17 @@ export class EditorialScoringEngine {
     if (readability && readability.max > 0) evalData.readabilityPoints = readability;
     else delete evalData.readabilityPoints;
 
-    // Barème sur 100 : intention 15, cannibalisation 10, zones chaudes 15, début de page 10, objectif 20, E-E-A-T 10
-    // (articles), qualité du contenu 15 (« couvrir le sujet »), lisibilité 5. Seuls les critères retenus pour la page
-    // entrent au dénominateur, et la note est ramenée sur 100.
-    const points = this.criterionPoints(evalData, page, role, goal, { queryConfirmed, coversTopic, eeatApplicable });
+    // Barème sur 100 : intention 15, cannibalisation 10 (mesurée dans Google seulement), zones chaudes 15, début de
+    // page 10, critère « sujet » 20, E-E-A-T 10 (articles), qualité du contenu 15 (« informer »), lisibilité 5. Seuls
+    // les critères retenus pour la page entrent au dénominateur, et la note est ramenée sur 100.
+    const points = this.criterionPoints(evalData, page, role, family, { queryConfirmed, eeatApplicable });
     evalData.points = points;
     const entries = Object.values(points);
     const available = entries.reduce((sum, item) => sum + item.max, 0);
     let totalScore = available > 0 ? (entries.reduce((sum, item) => sum + item.earned, 0) / available) * 100 : 0;
-    // Points réellement mesurés sur les 100 possibles : affichés, et poids de la page dans la moyenne du projet
-    evalData.coverage = { measured: available, total: 100 };
+    // Points réellement mesurés sur les 100 possibles : affichés, et poids de la page dans la moyenne du projet (0 pour
+    // une page non notée)
+    evalData.coverage = { measured: scored ? available : 0, total: 100 };
 
     totalScore = Math.min(100, Math.max(0, totalScore));
     const below = (key: EditorialCriterion, ratio: number) => {
@@ -107,8 +116,9 @@ export class EditorialScoringEngine {
       return Boolean(item && item.earned < item.max * ratio);
     };
 
-    // Génération des anomalies éditoriales si critères dégradés
-    if (queryConfirmed && below('intent', 0.75)) {
+    // Génération des anomalies éditoriales si critères dégradés (page notée seulement : une page de contact ou légale
+    // n'a pas d'enjeu éditorial, ses critères ne sont pas des problèmes)
+    if (scored && queryConfirmed && below('intent', 0.75)) {
       issues.push({
         id: `edito-intent-${page.path}`,
         pillar: 'EDITORIAL',
@@ -131,7 +141,8 @@ export class EditorialScoringEngine {
       issues.push({
         id: `edito-cannibal-${page.path}`,
         pillar: 'EDITORIAL',
-        severity: cannibal.score < 10 || cannibal.otherPageRanks ? 'WARNING' : 'INFO',
+        // Estimation de l'IA (hors note) : information bleue ; avertissement seulement pour un conflit mesuré
+        severity: points.cannibal && (cannibal.score < 10 || cannibal.otherPageRanks) ? 'WARNING' : 'INFO',
         code: 'CANNIBALIZATION_RISK',
         title: cannibal.otherPageRanks
           ? 'Google classe une autre page du site sur cette requête'
@@ -148,7 +159,7 @@ export class EditorialScoringEngine {
       });
     }
 
-    if (queryConfirmed && evalData.hotZonesOptimization.score < 10) {
+    if (scored && queryConfirmed && evalData.hotZonesOptimization.score < 10) {
       issues.push({
         id: `edito-hotzones-${page.path}`,
         pillar: 'EDITORIAL',
@@ -174,7 +185,7 @@ export class EditorialScoringEngine {
       });
     }
 
-    if (below('opening', 0.67)) {
+    if (scored && below('opening', 0.67)) {
       issues.push({
         id: `edito-tldr-${page.path}`,
         pillar: 'EDITORIAL',
@@ -197,18 +208,18 @@ export class EditorialScoringEngine {
       });
     }
 
-    if (coversTopic && below('goal', 0.6)) {
+    if (scored && below('goal', 0.6)) {
       const missing = evalData.semanticDepth.missingKeyEntities;
       issues.push(
-        judgesProof(goal)
+        family === 'present'
           ? {
-              // Page de présentation, d'action, de confiance ou de récit : des pistes, pas un manque de contenu à combler
+              // Page qui présente : des pistes, pas un manque de contenu à combler
               id: `edito-semantic-${page.path}`,
               pillar: 'EDITORIAL',
               severity: 'INFO',
               code: 'SEMANTIC_GAPS',
-              title: GOAL_CRITERION[goal].issueTitle,
-              description: `${GOAL_CRITERION[goal].issueLead}${missing.length > 0 ? ` : éléments qui manquent (${missing.join(', ')})` : ''}. Estimation de l'IA.`,
+              title: presentCriterion(role)?.issueTitle ?? 'Pistes pour mieux présenter la page',
+              description: `${presentCriterion(role)?.issueLead ?? 'La page pourrait mieux se présenter'}${missing.length > 0 ? ` : éléments qui manquent (${missing.join(', ')})` : ''}. Estimation de l'IA.`,
               recommendation: evalData.semanticDepth.actionableAdvice,
               stepsToResolve: missing.slice(0, 3).map((element) => `Envisager : ${element}`),
               affectedUrl: page.url
@@ -260,10 +271,8 @@ export class EditorialScoringEngine {
           title: 'Snippet SERP peu attractif (Title / méta description)',
           description: `${search.snippet.titleCritique} ${search.snippet.metaCritique}`.trim(),
           recommendation: 'Réécrire le Title et la méta description pour gagner en taux de clic.',
-          stepsToResolve: [
-            `Title suggéré : ${search.snippet.suggestedTitle}`,
-            `Méta description suggérée : ${search.snippet.suggestedMeta}`
-          ],
+          // Title et méta rédigés seulement à la demande, dans la réécriture
+          stepsToResolve: [SNIPPET_REWRITE_STEP],
           affectedUrl: page.url
         });
       }
@@ -285,9 +294,9 @@ export class EditorialScoringEngine {
         });
       }
 
-      // Les sections estimées par l'IA ne se proposent qu'à une page qui doit couvrir son sujet : une page de
-      // présentation ou une page directe n'a pas à devenir un guide
-      const gapsApplicable = goal === 'cover' && role !== 'contact' && role !== 'brand' && role !== 'utility';
+      // Les sections estimées par l'IA ne se proposent qu'à une page qui informe : une page qui présente ou une page
+      // de contact n'a pas à devenir un guide
+      const gapsApplicable = family === 'inform';
       if (gapsApplicable && search.contentGaps.missingSections.length >= 3) {
         issues.push({
           id: `edito-gaps-${page.path}`,
@@ -307,7 +316,7 @@ export class EditorialScoringEngine {
     issues.push(...this.diagnosticIssues(page, evalData, role));
 
     return {
-      score: Math.round(totalScore),
+      score: scored ? Math.round(totalScore) : null,
       issues,
       evaluation: evalData
     };
@@ -316,14 +325,15 @@ export class EditorialScoringEngine {
   /**
    * Points de chaque critère retenu. Les critères jugés par l'IA viennent des grilles à cases quand l'analyse en a
    * (prompt v9) ; sinon, l'ancien palier est converti au nouveau barème (intention 20 vers 15, début de page 15 vers
-   * 10), en attendant la prochaine analyse. La phrase d'introduction citée doit figurer dans les 150 premiers mots.
+   * 10), en attendant la prochaine analyse. Une case appuyée sur un extrait n'est cochée que si le code le retrouve :
+   * phrase d'introduction dans les 150 premiers mots, preuve concrète n'importe où dans le contenu.
    */
   private static criterionPoints(
     evalData: EditorialEvaluation,
     page: RawPageData,
     role: PageRole,
-    goal: ReturnType<typeof resolveGoal>['goal'],
-    flags: { queryConfirmed: boolean; coversTopic: boolean; eeatApplicable: boolean }
+    family: PageFamily,
+    flags: { queryConfirmed: boolean; eeatApplicable: boolean }
   ): Partial<Record<EditorialCriterion, CriterionPoints>> {
     const points: Partial<Record<EditorialCriterion, CriterionPoints>> = {};
     const checks = evalData.checks;
@@ -333,6 +343,10 @@ export class EditorialScoringEngine {
       basis: 'legacy'
     });
     const fromChecks = (result: ReturnType<typeof scoreChecks>): CriterionPoints => ({ ...result, basis: 'checklist' });
+    const quoteVerified = (field: 'openingQuote' | 'proofQuote') =>
+      field === 'openingQuote'
+        ? openingQuoteVerified(page.bodyText, checks?.openingQuote)
+        : proofQuoteVerified(page.bodyText, checks?.proofQuote);
 
     // Requêtes notées : intention, couverture et concurrence moyennées selon le poids (volume) de chaque requête
     const set = evalData.querySet ?? [];
@@ -352,32 +366,34 @@ export class EditorialScoringEngine {
         basis: 'measured'
       };
     }
+    // Cannibalisation : notée seulement si elle est mesurée dans les résultats Google (onglet Positionnement).
+    // L'estimation de l'IA, qui ne voit que l'URL, le Title et le H1 des autres pages, reste un constat hors note
+    // (elle valait presque toujours le maximum et ne départageait rien)
     const cannibal = evalData.cannibalizationRisk;
     const measuredCannibal = set.some((entry) => entry.cannibal !== null);
-    // Requête sans relevé exploitable : l'estimation (ou la mesure de la requête cible) tient lieu de valeur
-    const cannibalScore = measuredCannibal
-      ? weightedAverage(set.map((entry) => ({ weight: entry.weight, value: entry.cannibal ?? cannibal.score }))) ?? cannibal.score
-      : cannibal.score;
-    points.cannibal = {
-      earned: Math.round(Math.max(0, Math.min(20, cannibalScore)) / 2),
-      max: 10,
-      basis: measuredCannibal || cannibal.source === 'SERP' ? 'measured' : 'ai'
-    };
-    if (checks && answered(openingChecks(role), checks.opening)) {
-      const answers = {
-        ...checks.opening,
-        lead: answerOf(checks.opening, 'lead') === true && openingQuoteVerified(page.bodyText, checks.openingQuote)
-      };
-      points.opening = fromChecks(scoreChecks(openingChecks(role), answers));
-    } else {
-      points.opening = legacy(evalData.primaryContentTldr.score, 15, 10);
+    if (measuredCannibal || cannibal.source === 'SERP') {
+      // Requête sans relevé exploitable : la mesure de la requête cible (ou l'estimation) tient lieu de valeur
+      const cannibalScore = measuredCannibal
+        ? weightedAverage(set.map((entry) => ({ weight: entry.weight, value: entry.cannibal ?? cannibal.score }))) ?? cannibal.score
+        : cannibal.score;
+      points.cannibal = { earned: Math.round(Math.max(0, Math.min(20, cannibalScore)) / 2), max: 10, basis: 'measured' };
     }
-    if (flags.coversTopic && goal !== 'direct') {
-      // Grille remplie sous un autre objectif : ses cases ne correspondent pas, l'ancienne note de l'IA est gardée
-      points.goal =
-        checks && checks.goalKey === goal && answered(GOAL_CHECKS[goal], checks.goal)
-          ? fromChecks(scoreChecks(GOAL_CHECKS[goal], checks.goal))
-          : legacy(evalData.semanticDepth.score, 20, 20);
+    points.opening =
+      checks && answered(openingChecks(role), checks.opening)
+        ? fromChecks(scoreChecks(openingChecks(role), checks.opening, quoteVerified))
+        : legacy(evalData.primaryContentTldr.score, 15, 10);
+    // Analyse faite sans critère « sujet » (ancien objectif « aller droit au but », ou page alors non notée) : l'IA y
+    // mettait la couverture à 0 sans juger la page ; le critère reste hors note jusqu'à la prochaine analyse
+    const judgedWithoutSubject = ['direct', 'unscored'].includes(checks?.goalKey ?? (evalData as { goal?: string }).goal ?? '');
+    const grid = subjectGridOf(role);
+    if (grid) {
+      // Grille remplie sous une autre grille ou un ancien objectif : ses cases ne correspondent pas, l'ancienne note
+      // de l'IA est gardée en attendant la prochaine analyse
+      if (checks && gridMatches(checks.goalKey, grid) && answered(SUBJECT_CHECKS[grid], checks.goal)) {
+        points.goal = fromChecks(scoreChecks(SUBJECT_CHECKS[grid], checks.goal, quoteVerified));
+      } else if (!judgedWithoutSubject) {
+        points.goal = legacy(evalData.semanticDepth.score, 20, 20);
+      }
     }
     if (flags.eeatApplicable) {
       const eeat = evalData.eeatSignals;
@@ -501,6 +517,7 @@ export class EditorialScoringEngine {
     const entries = buildQuerySet({
       target: { query: search.targetQuery.query, confirmed: confidence !== 'INFERRED' || isBrand, isBrand },
       research: page.keywordResearch,
+      opportunities: page.keywordOpportunities,
       candidates: search.candidates,
       override: page.querySetOverride,
       brandOnly: role === 'contact' || role === 'utility'
@@ -523,7 +540,8 @@ export class EditorialScoringEngine {
         ...entry,
         coverage: {
           score: measure.score,
-          missing: (['title', 'first100Words', 'subheadings'] as const).filter((zone) => measure[zone].missing.length > 0).map((zone) => ZONE_LABELS[zone])
+          missing: (['title', 'first100Words', 'subheadings'] as const).filter((zone) => measure[zone].missing.length > 0).map((zone) => ZONE_LABELS[zone]),
+          zones: { title: measure.title, first100Words: measure.first100Words, subheadings: measure.subheadings }
         },
         intent: intent?.earned ?? null,
         ...(intent ? { intentPassed: intent.passed, intentFailed: intent.failed } : {}),
@@ -570,8 +588,10 @@ export class EditorialScoringEngine {
         });
       }
 
-      if (freshness.outdatedMentions.length > 0) {
-        const years = Array.from(new Set(freshness.outdatedMentions.map((m) => m.year))).sort();
+      // Années qui datent un début toujours en cours (« depuis 2019 ») : ni périmées ni à corriger
+      const outdated = staleMentions(freshness.outdatedMentions);
+      if (outdated.length > 0) {
+        const years = Array.from(new Set(outdated.map((m) => m.year))).sort();
         const updateStatus = freshness.lastUpdated
           ? `Dernière mise à jour déclarée : ${freshness.lastUpdated.slice(0, 10)}.`
           : 'Aucune date de mise à jour déclarée sur la page.';
@@ -581,7 +601,7 @@ export class EditorialScoringEngine {
           severity: 'INFO',
           code: 'OUTDATED_YEAR_MENTIONS',
           title: `Années passées mentionnées (${years.join(', ')})`,
-          description: `${freshness.outdatedMentions
+          description: `${outdated
             .slice(0, 3)
             .map((m) => `« …${m.excerpt}… »`)
             .join(' ')} ${updateStatus} Vérifiez que ces mentions sont toujours justes.`,
@@ -692,9 +712,11 @@ export class EditorialScoringEngine {
       }
     }
 
-    const quality = evaluation.quality;
+    // Expérience vécue et originalité : jugées seulement pour une page qui informe ; pour une page qui présente, la
+    // preuve est déjà jugée dans « Crédibilité » ou « Savoir-faire » (sinon : même constat compté deux fois)
+    const quality = familyOf(role) === 'inform' ? evaluation.quality : undefined;
     if (quality) {
-      if (!quality.firstHandExperience.detected && (role === 'article' || role === 'informational' || role === 'offer' || role === 'case')) {
+      if (!quality.firstHandExperience.detected) {
         issues.push({
           id: `edito-experience-${page.path}`,
           pillar: 'EDITORIAL',
@@ -708,7 +730,7 @@ export class EditorialScoringEngine {
         });
       }
 
-      if (quality.informationGain.level === 'LOW' && role !== 'contact' && role !== 'utility') {
+      if (quality.informationGain.level === 'LOW') {
         const fluff = quality.informationGain.genericFluff
           .slice(0, 2)
           .map((f) => `« ${f} »`)

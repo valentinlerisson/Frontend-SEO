@@ -44,6 +44,10 @@ function parseArgs(argv) {
 const log = (...parts) => console.error('[google-serp]', ...parts);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Message de Google quand il n'y a plus (ou aucun) résultat : fin du défilement, pas un captcha */
+const NO_RESULTS = /Aucun document ne correspond|ne correspond à aucun document|did not match any documents|Aucun résultat/i;
+
+/** true : résultats affichés ; 'empty' : Google dit qu'il n'y a plus de résultat ; false : délai dépassé (captcha probable) */
 async function waitForResults(page, timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   while (Date.now() < deadline) {
@@ -55,6 +59,8 @@ async function waitForResults(page, timeoutSeconds) {
       }
     }
     if (await page.locator('#search a h3').count()) return true;
+    const text = await page.locator('body').innerText().catch(() => '');
+    if (NO_RESULTS.test(text)) return 'empty';
     await sleep(2000); // captcha ou chargement : résolution manuelle possible dans la fenêtre
   }
   return false;
@@ -92,7 +98,10 @@ export async function searchGoogle({ query, pages, start = 0, profile, timeout, 
       const url = `https://www.google.fr/search?hl=fr&gl=fr&pws=0&q=${encodeURIComponent(query)}&start=${10 * index}${uule ? `&uule=${encodeURIComponent(uule)}` : ''}`;
       await page.goto(url);
 
-      if (!(await waitForResults(page, timeout))) {
+      const ready = await waitForResults(page, timeout);
+      // Fin des résultats (défilement profond) : on garde ce qui a été lu, sans attendre ni parler de captcha
+      if (ready === 'empty') break;
+      if (!ready) {
         await saveDebug(page, debugDir);
         throw new GoogleBlockedError('captcha ou blocage: résolution manuelle requise');
       }

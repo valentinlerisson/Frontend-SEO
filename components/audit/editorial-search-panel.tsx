@@ -1,11 +1,21 @@
 'use client'
 
 import { useState } from 'react'
-import { Bot, Check, Copy, RefreshCw } from 'lucide-react'
+import { Bot, RefreshCw, RotateCcw } from 'lucide-react'
 import { useAudit } from '@/components/providers/audit-provider'
 import type { InspectionData } from '@/lib/audit-data'
-import { PageRoleGoal } from './page-role-goal'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { PageRoleFamily } from './page-role-family'
 import { KeywordResearchPanel } from './keyword-research-panel'
+import { KeywordOpportunitiesPanel } from './keyword-opportunities-panel'
 import { PageRewritePanel } from './page-rewrite-panel'
 import { QuerySetPanel } from './query-set-panel'
 
@@ -16,52 +26,32 @@ const INTENT_LABEL = {
   NAVIGATIONAL: 'Navigationnelle',
 } as const
 
-function CopyableDeliverable({ label, value, hint }: { label: string; value: string; hint: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // Presse-papiers indisponible (contexte non sécurisé) : l'utilisateur peut sélectionner le texte
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-shade-33 bg-shade-19 p-3">
-      <div className="mb-1.5 flex items-center justify-between gap-3">
-        <span className="text-xs font-semibold text-foreground">{label}</span>
-        <button
-          type="button"
-          onClick={copy}
-          className="inline-flex items-center gap-1.5 rounded-md border border-shade-44 px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-        >
-          {copied ? <Check className="size-3.5 text-green-ink" /> : <Copy className="size-3.5" />}
-          {copied ? 'Copié' : 'Copier'}
-        </button>
-      </div>
-      <p className="select-all text-sm text-foreground">{value}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
-    </div>
-  )
-}
+/** Parties de l'onglet Contenu, chacune dans sa sous-vue : notes, mots-clés et volumes, réécriture */
+export type EditorialPart = 'summary' | 'keywords' | 'rewrite'
 
 /**
- * Bloc "requête cible" de l'onglet éditorial : affichage de la requête, saisie manuelle,
- * ré-analyse, et livrables prêts à l'emploi (Title / méta réécrits).
+ * Blocs de l'onglet Contenu, par partie. « summary » (vue Notes) : problématique, requête notée, rôle et famille,
+ * position, intention, ré-analyse. « keywords » (vue Mots-clés) : requêtes notées, mots-clés et volumes, recherches
+ * hors page. « rewrite » (vue Réécriture) : Title, méta et plan proposés, capture de la page.
  */
 export function EditorialSearchPanel({
   pageId,
   editorial,
+  part,
+  headings,
+  url,
 }: {
   pageId: string
   editorial: InspectionData['editorial']
+  part: EditorialPart
+  /** Titres actuels de la page (plan de la réécriture) */
+  headings?: { level: number; text: string }[]
+  url: string
 }) {
   const { auditDbId, refreshAudit } = useAudit()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmReset, setConfirmReset] = useState(false)
 
   const search = editorial.search
   // Requêtes notées, de la plus lourde à la plus légère ; analyse antérieure sans groupe : la requête cible
@@ -69,7 +59,7 @@ export function EditorialSearchPanel({
   const main = querySet[0]?.query ?? editorial.targetKeyword
   const totalVolume = querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0)
 
-  const run = async (body: { force?: boolean }) => {
+  const run = async (body: { force?: boolean; reset?: boolean }) => {
     if (!auditDbId) return
     setBusy(true)
     setError(null)
@@ -89,6 +79,31 @@ export function EditorialSearchPanel({
     } finally {
       setBusy(false)
     }
+  }
+
+  const scored = querySet.map((entry) => entry.query)
+
+  if (part === 'keywords') {
+    return (
+      <div className="space-y-3">
+        {editorial.querySet && editorial.querySet.length > 0 && (
+          <QuerySetPanel key={editorial.querySet.map((entry) => entry.query).join('|')} pageId={pageId} editorial={editorial} />
+        )}
+        <KeywordResearchPanel pageId={pageId} keywords={editorial.keywords} scored={scored} />
+        <KeywordOpportunitiesPanel pageId={pageId} opportunities={editorial.opportunities} scored={scored} />
+      </div>
+    )
+  }
+
+  if (part === 'rewrite') {
+    // Réécriture : seul endroit des Title et méta prêts à copier, rédigés au clic avec les requêtes notées
+    return search ? (
+      <PageRewritePanel pageId={pageId} rewrite={editorial.rewrite} keywords={scored} headings={headings} url={url} />
+    ) : (
+      <p className="rounded-xl border border-shade-33 bg-shade-1e p-4 text-sm text-muted-foreground">
+        La réécriture part des requêtes notées : lancez d’abord l’analyse de la page (vue Notes, « Ré-analyser la page »).
+      </p>
+    )
   }
 
   return (
@@ -121,22 +136,21 @@ export function EditorialSearchPanel({
                   .slice(1)
                   .map((entry) => `« ${entry.query} »${entry.volume !== undefined ? ` (${entry.volume.toLocaleString('fr-FR')}/mois)` : ''}`)
                   .join(', ')}
-                . Détail et choix des requêtes ci-dessous.
+                . Détail et choix des requêtes dans la vue Mots-clés.
               </p>
             )}
           </div>
         </div>
         <dl className="grid gap-2 sm:grid-cols-2">
           <div className="rounded-lg bg-inset p-3 sm:col-span-2">
-            <PageRoleGoal
+            <PageRoleFamily
               pageId={pageId}
               path="cette page"
               role={editorial.role}
               roleSource={editorial.roleSource}
               roleReason={editorial.roleReason}
-              goal={editorial.goal}
-              goalSource={editorial.goalSource}
-              goalStale={editorial.goalStale}
+              family={editorial.family}
+              familyStale={editorial.familyStale}
               variant="full"
               disabled={busy}
             />
@@ -201,10 +215,6 @@ export function EditorialSearchPanel({
         </div>
       )}
 
-      {editorial.querySet && editorial.querySet.length > 0 && (
-        <QuerySetPanel key={editorial.querySet.map((entry) => entry.query).join('|')} pageId={pageId} editorial={editorial} />
-      )}
-
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-shade-33 bg-shade-1e p-3 text-xs">
         <button
           type="button"
@@ -215,6 +225,15 @@ export function EditorialSearchPanel({
           <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} />
           Ré-analyser la page
         </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirmReset(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-shade-44 px-3 py-1.5 text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
+        >
+          <RotateCcw className="size-3.5" />
+          Repartir de zéro
+        </button>
         <span role="status" className="text-muted-foreground">
           {busy
             ? 'Analyse en cours, cela peut prendre une minute…'
@@ -223,34 +242,40 @@ export function EditorialSearchPanel({
         {error && <p className="w-full text-[#ef4444]">{error}</p>}
       </div>
 
-      <KeywordResearchPanel pageId={pageId} keywords={editorial.keywords} scored={querySet.map((entry) => entry.query)} />
-
-      {search && (
-        <PageRewritePanel pageId={pageId} rewrite={editorial.rewrite} keywords={querySet.map((entry) => entry.query)} />
-      )}
-
-      {search && (
-        <div className="space-y-2.5 rounded-xl border border-shade-33 bg-shade-1e p-3.5">
-          <h4 className="text-sm font-semibold text-foreground">Livrables prêts à l'emploi</h4>
-          <CopyableDeliverable
-            label="Title suggéré"
-            value={search.snippet.suggestedTitle}
-            hint={`${search.snippet.suggestedTitle.length} caractères (idéal 45 à 60)`}
-          />
-          <CopyableDeliverable
-            label="Méta description suggérée"
-            value={search.snippet.suggestedMeta}
-            hint={`${search.snippet.suggestedMeta.length} caractères (idéal 130 à 155)`}
-          />
-          {search.snippet.unverifiedTerms && search.snippet.unverifiedTerms.length > 0 && (
-            <p className="rounded-lg border border-line-yellow bg-tint-yellow p-2.5 text-xs text-yellow-pale">
-              Ces suggestions contiennent des éléments absents de la page :{' '}
-              <strong>{search.snippet.unverifiedTerms.join(', ')}</strong>. Vérifiez qu’ils sont exacts avant de
-              publier.
-            </p>
-          )}
-        </div>
-      )}
+      <AlertDialog open={confirmReset} onOpenChange={setConfirmReset}>
+        <AlertDialogContent className="border border-border bg-card p-6 data-[size=default]:sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-lg font-semibold">Repartir de zéro sur cette page ?</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-sm">
+              <span className="block">
+                <strong className="text-foreground">Effacés</strong> : problématique et mots-clés de départ, volumes et
+                tri des mots-clés, requêtes notées choisies à la main, recherches hors page, réécriture proposée.
+              </span>
+              <span className="block">
+                <strong className="text-foreground">Gardés</strong> : rôle de la page, mesures Google de
+                l’onglet Positionnement.
+              </span>
+              <span className="block">
+                L’analyse est relancée aussitôt (IA et Keyword Planner, environ une minute). Impossible d’annuler.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="-mx-6 -mb-6 border-border bg-transparent p-6">
+            <AlertDialogCancel className="h-10 px-4 text-sm">Annuler</AlertDialogCancel>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmReset(false)
+                run({ reset: true })
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-destructive px-4 text-sm font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive"
+            >
+              <RotateCcw className="size-4" aria-hidden="true" />
+              Effacer et relancer
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

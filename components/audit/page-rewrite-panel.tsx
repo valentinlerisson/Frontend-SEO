@@ -1,35 +1,16 @@
 'use client'
 
-import { useState } from 'react'
-import { ArrowRight, Check, Copy, PenLine, RefreshCw } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Check, Copy, PenLine, RefreshCw } from 'lucide-react'
 import { useAudit } from '@/components/providers/audit-provider'
 import type { InspectionData } from '@/lib/audit-data'
 import { contentTokens } from '@/core/domain/scoring/autocomplete-relevance'
+import { rewriteMarkdown, rewriteOutline, type OutlineLine } from '@/core/domain/page-rewrite'
+import { PageScreenshot } from './page-screenshot'
 
 /** Racine grossière : pluriels en s / x confondus avec le singulier (comme la mesure de couverture) */
 const stem = (token: string) => (token.length > 3 ? token.replace(/[sx]$/, '') : token)
 const stemsOf = (text: string) => contentTokens(text).map(stem)
-
-/**
- * Texte proposé dont les mots des requêtes notées s'allument : ceux de la requête survolée, ou de toutes les requêtes
- * reprises quand on survole le texte lui-même
- */
-function HighlightedText({ text, active }: { text: string; active: Set<string> }) {
-  if (active.size === 0) return <>{text}</>
-  return (
-    <>
-      {text.split(/(\s+)/).map((part, index) =>
-        /\S/.test(part) && stemsOf(part).some((token) => active.has(token)) ? (
-          <mark key={index} className="rounded bg-primary/30 px-0.5 text-foreground">
-            {part}
-          </mark>
-        ) : (
-          <span key={index}>{part}</span>
-        ),
-      )}
-    </>
-  )
-}
 
 /** Requêtes notées reprises dans le texte : tous leurs mots porteurs de sens y figurent (ordre libre) */
 function appliedKeywords(text: string, keywords: string[]): string[] {
@@ -40,55 +21,32 @@ function appliedKeywords(text: string, keywords: string[]): string[] {
   })
 }
 
-/** Proposition avec ses mots-clés repris : survol d'une pastille ou du texte pour les voir dans la phrase */
-function KeywordText({ text, keywords, className }: { text: string; keywords: string[]; className?: string }) {
-  const [hovered, setHovered] = useState<string | 'all' | null>(null)
-  const applied = appliedKeywords(text, keywords)
-  const active = new Set(
-    hovered === 'all' ? applied.flatMap(stemsOf) : hovered ? stemsOf(hovered) : [],
-  )
+/** Texte dont les mots des requêtes actives s'allument ; « [À COMPLÉTER : …] » mis en évidence (information à fournir) */
+function HighlightedText({ text, active }: { text: string; active: Set<string> }) {
   return (
     <>
-      <span
-        className={className}
-        onMouseEnter={() => setHovered('all')}
-        onMouseLeave={() => setHovered(null)}
-      >
-        <HighlightedText text={text} active={active} />
-      </span>
-      {keywords.length > 0 && (
-        <span className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px]">
-          {applied.length > 0 ? (
-            <>
-              <span className="text-muted-foreground">Requêtes reprises :</span>
-              {applied.map((keyword) => (
-                <span
-                  key={keyword}
-                  onMouseEnter={() => setHovered(keyword)}
-                  onMouseLeave={() => setHovered(null)}
-                  onFocus={() => setHovered(keyword)}
-                  onBlur={() => setHovered(null)}
-                  tabIndex={0}
-                  className={`cursor-default rounded-full border px-2 py-0.5 transition-colors ${
-                    hovered === keyword || hovered === 'all'
-                      ? 'border-primary bg-primary/20 text-foreground'
-                      : 'border-shade-44 text-muted-foreground'
-                  }`}
-                >
-                  {keyword}
-                </span>
-              ))}
-            </>
-          ) : (
-            <span className="text-muted-foreground">Aucune requête notée reprise</span>
-          )}
-        </span>
+      {text.split(/(\[À COMPLÉTER[^\]]*\])/).map((chunk, chunkIndex) =>
+        chunk.startsWith('[À COMPLÉTER') ? (
+          <span key={chunkIndex} className="rounded border border-dashed border-line-indigo bg-tint-indigo px-1 text-sky-soft">
+            {chunk}
+          </span>
+        ) : (
+          chunk.split(/(\s+)/).map((part, index) =>
+            active.size > 0 && /\S/.test(part) && stemsOf(part).some((token) => active.has(token)) ? (
+              <mark key={`${chunkIndex}-${index}`} className="rounded bg-primary/30 px-0.5 text-foreground">
+                {part}
+              </mark>
+            ) : (
+              <span key={`${chunkIndex}-${index}`}>{part}</span>
+            ),
+          )
+        ),
       )}
     </>
   )
 }
 
-function CopyButton({ value }: { value: string }) {
+function CopyButton({ value, label = 'Copier', iconOnly = false }: { value: string; label?: string; iconOnly?: boolean }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
@@ -103,67 +61,71 @@ function CopyButton({ value }: { value: string }) {
     <button
       type="button"
       onClick={copy}
+      title={copied ? 'Copié' : label}
+      aria-label={iconOnly ? label : undefined}
       className="inline-flex shrink-0 items-center gap-1 rounded-md border border-shade-44 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
     >
-      {copied ? <Check className="size-3 text-green-ink" /> : <Copy className="size-3" />}
-      {copied ? 'Copié' : 'Copier'}
+      {copied ? <Check className="size-3 text-green-ink" aria-hidden="true" /> : <Copy className="size-3" aria-hidden="true" />}
+      {!iconOnly && (copied ? 'Copié' : label)}
     </button>
   )
 }
 
-/** Ancien texte, puis texte proposé avec un bouton pour le copier */
-function BeforeAfter({
-  label,
-  current,
-  proposed,
-  hint,
-  hintWarning,
-  keywords = [],
-}: {
-  label: string
-  current: string
-  proposed: string
-  /** Requêtes notées de la page : celles reprises dans la proposition s'allument au survol */
-  keywords?: string[]
-  hint?: string
-  /** Longueur hors de la plage conseillée : à raccourcir ou allonger avant de publier */
-  hintWarning?: boolean
-}) {
-  return (
-    <div className="rounded-lg border border-shade-33 bg-shade-19 p-3">
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-foreground">{label}</span>
-        <CopyButton value={proposed} />
-      </div>
-      <p className="text-xs text-muted-foreground line-through decoration-shade-44">{current || '(absent)'}</p>
-      <p className="mt-1 flex items-start gap-1.5 text-sm text-foreground">
-        <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-primary-ink" aria-hidden="true" />
-        <span className="flex min-w-0 flex-col">
-          <KeywordText text={proposed} keywords={keywords} className="select-all whitespace-pre-line" />
-        </span>
-      </p>
-      {hint && <p className={`mt-1 text-[11px] ${hintWarning ? 'text-amber-soft' : 'text-muted-foreground'}`}>{hint}</p>}
-    </div>
-  )
+/** Survol partagé : une pastille de requête allume ses mots partout ; un bloc survolé allume les requêtes qu'il reprend */
+type Hover = { keyword: string } | { block: string } | null
+
+const HEADING_CLASS: Record<number, string> = {
+  1: 'text-xl font-extrabold tracking-tight',
+  2: 'text-base font-bold',
+  3: 'text-sm font-semibold',
 }
 
 /**
- * Réécriture proposée par l'IA : Title, méta, H1, sous-titres H2 et phrase d'ouverture de chaque section, sections à
- * ajouter. Proposition à relire, sans effet sur la note ; noms et chiffres absents de la page signalés.
+ * Réécriture proposée par l'IA à partir des requêtes notées (cochées), montrée comme la page en Markdown : Title et
+ * méta tels que Google les afficherait, puis le plan complet (H1, chaque titre à son niveau, ouvertures de section,
+ * sections à ajouter). Au survol, les requêtes reprises s'allument. « Comparer » montre le texte actuel barré et la
+ * raison de chaque changement. Vue « Page actuelle » : capture PageSpeed de la page, pour comparer. Rédigée seulement
+ * quand l'utilisateur clique ; proposition à relire, sans effet sur la note ; noms et chiffres absents de la page signalés.
  */
 export function PageRewritePanel({
   pageId,
   rewrite,
   keywords = [],
+  headings,
+  url,
 }: {
   pageId: string
   rewrite?: InspectionData['editorial']['rewrite']
   /** Requêtes notées de la page, de la plus lourde à la plus légère */
   keywords?: string[]
+  /** Titres actuels de la page, dans l'ordre */
+  headings?: { level: number; text: string }[]
+  url: string
 }) {
   const { auditDbId, refreshAudit } = useAudit()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [compare, setCompare] = useState(false)
+  const [hover, setHover] = useState<Hover>(null)
+
+  const outline = useMemo(() => (rewrite ? rewriteOutline(rewrite, headings) : []), [rewrite, headings])
+  const markdown = rewrite ? rewriteMarkdown(rewrite, outline) : ''
+  const allText = rewrite ? [rewrite.title.proposed, rewrite.meta.proposed, ...outline.flatMap((line) => [line.text, line.intro ?? ''])].join(' ') : ''
+  const applied = appliedKeywords(allText, keywords)
+
+  /** Mots allumés dans un bloc : ceux de la pastille survolée, ou toutes les requêtes reprises par le bloc survolé */
+  const activeFor = (id: string, text: string) =>
+    new Set(
+      hover && 'keyword' in hover
+        ? stemsOf(hover.keyword)
+        : hover && 'block' in hover && hover.block === id
+          ? appliedKeywords(text, keywords).flatMap(stemsOf)
+          : [],
+    )
+  const hoverProps = (id: string) => ({
+    onMouseEnter: () => setHover({ block: id }),
+    onMouseLeave: () => setHover(null),
+  })
 
   const run = async (force: boolean) => {
     if (!auditDbId) return
@@ -187,88 +149,258 @@ export function PageRewritePanel({
     }
   }
 
+  const titleLength = rewrite?.title.proposed.length ?? 0
+  const metaLength = rewrite?.meta.proposed.length ?? 0
+  let displayUrl = url
+  try {
+    const parsed = new URL(url)
+    displayUrl = `${parsed.hostname}${parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '').split('/').join(' › ')}`
+  } catch {
+    // adresse non analysable : affichée telle quelle
+  }
+
   return (
-    <div className="space-y-2.5 rounded-xl border border-shade-33 bg-shade-1e p-3.5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-          <PenLine className="size-4" aria-hidden="true" /> Réécriture proposée
-        </h4>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => run(Boolean(rewrite))}
-          className="inline-flex items-center gap-1.5 rounded-md border border-shade-44 px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground disabled:opacity-50"
-        >
-          <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} />
-          {rewrite ? 'Nouvelle proposition' : 'Proposer une réécriture'}
-        </button>
+    <div className="space-y-5">
+      {/* Actions de la proposition */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <h3 className="flex items-center gap-2 text-base font-semibold text-foreground">
+          <PenLine className="size-4 text-muted-foreground" aria-hidden="true" />
+          Réécriture
+        </h3>
+        <div className="flex flex-wrap items-center gap-2">
+          {rewrite && (
+            <>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+                <input type="checkbox" checked={compare} onChange={(event) => setCompare(event.target.checked)} className="accent-[#f5e400]" />
+                Comparer avec l’actuel
+              </label>
+              <CopyButton value={markdown} label="Copier en Markdown" />
+            </>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => run(Boolean(rewrite))}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
+              rewrite
+                ? 'border border-shade-44 text-muted-foreground hover:border-primary hover:text-foreground'
+                : 'bg-primary text-primary-foreground hover:bg-[#e0d100]'
+            }`}
+          >
+            {rewrite ? <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} /> : <PenLine className="size-3.5" />}
+            {rewrite ? 'Nouvelle proposition' : 'Proposer une réécriture'}
+          </button>
+        </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        Titres et ouvertures de section rédigés par l’IA selon l’objectif de la page, avec la requête principale et
-        les recherches secondaires, à partir des seuls faits de la page. À relire avant publication. Sans effet sur la
-        note.
-        {busy ? ' Rédaction en cours, cela peut prendre une minute…' : ''}
-      </p>
+
       {error && <p className="text-xs text-[#ef4444]">{error}</p>}
+
+      {/* Page actuelle (capture PageSpeed) à gauche ; Title, méta et avertissements à droite */}
+      <div className="grid items-start gap-5 sm:grid-cols-[176px_minmax(0,1fr)]">
+        <PageScreenshot pageId={pageId} compact />
+        <div className="min-w-0 space-y-4">
+          {!rewrite || busy ? (
+            <p className="rounded-xl border border-shade-33 bg-shade-1e p-4 text-sm leading-relaxed text-muted-foreground">
+              Title, méta description, H1, sous-titres et ouvertures de section rédigés par l’IA selon le rôle de la
+              page, à partir des requêtes notées (la plus lourde en principale) et des seuls faits de la page. À relire
+              avant publication. Sans effet sur la note.
+              {busy ? ' Rédaction en cours, cela peut prendre une minute…' : ''}
+            </p>
+          ) : null}
+
+          {rewrite && (
+            <>
+              {rewrite.outdated && (
+                <p className="rounded-xl border border-line-indigo bg-tint-indigo p-3 text-xs leading-relaxed text-sky-soft">
+                  Proposition faite sur une version précédente (contenu, famille ou requêtes notées changés) : demandez
+                  une nouvelle proposition pour que le Title, la méta et les titres reprennent les requêtes cochées.
+                </p>
+              )}
+              {rewrite.unverified.length > 0 && (
+                <p className="rounded-xl border border-line-yellow bg-tint-yellow p-3 text-xs leading-relaxed text-yellow-pale">
+                  Éléments absents de la page : <strong>{rewrite.unverified.join(', ')}</strong>. Vérifiez qu’ils sont
+                  exacts, ou retirez-les, avant de publier.
+                </p>
+              )}
+
+              {/* Dans Google : Title et méta comme dans un résultat */}
+              <section aria-label="Title et méta description" className="rounded-xl border border-shade-33 bg-shade-1e p-4">
+                <p className="mb-2 flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Dans Google
+                  <span className="flex gap-1 normal-case tracking-normal">
+                    <CopyButton value={rewrite.title.proposed} label="Title" />
+                    <CopyButton value={rewrite.meta.proposed} label="Méta" />
+                  </span>
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{displayUrl}</p>
+                <p className="mt-0.5 text-lg leading-snug text-sky-soft" {...hoverProps('title')}>
+                  <HighlightedText text={rewrite.title.proposed} active={activeFor('title', rewrite.title.proposed)} />
+                </p>
+                {compare && <p className="mt-0.5 text-xs text-muted-foreground line-through decoration-shade-44">{rewrite.title.current || '(absent)'}</p>}
+                <p className="mt-2 text-sm leading-relaxed text-foreground/85" {...hoverProps('meta')}>
+                  <HighlightedText text={rewrite.meta.proposed} active={activeFor('meta', rewrite.meta.proposed)} />
+                </p>
+                {compare && <p className="mt-0.5 text-xs text-muted-foreground line-through decoration-shade-44">{rewrite.meta.current || '(absente)'}</p>}
+                <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-shade-33 pt-2.5 text-[11px]">
+                  <span className={titleLength < 45 || titleLength > 60 ? 'text-amber-soft' : 'text-muted-foreground'}>
+                    Title : {titleLength} car. (idéal 45 à 60)
+                  </span>
+                  <span className={metaLength < 130 || metaLength > 155 ? 'text-amber-soft' : 'text-muted-foreground'}>
+                    Méta : {metaLength} car. (idéal 130 à 155)
+                  </span>
+                </p>
+              </section>
+
+              {/* Requêtes reprises : le survol d'une pastille allume ses mots dans toute la proposition */}
+              {keywords.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Requêtes reprises</p>
+                  <p className="flex flex-wrap items-center gap-1.5 text-xs">
+                    {applied.length > 0 ? (
+                      applied.map((keyword) => (
+                        <span
+                          key={keyword}
+                          tabIndex={0}
+                          onMouseEnter={() => setHover({ keyword })}
+                          onMouseLeave={() => setHover(null)}
+                          onFocus={() => setHover({ keyword })}
+                          onBlur={() => setHover(null)}
+                          className={`cursor-default rounded-full border px-2.5 py-1 transition-colors ${
+                            hover && 'keyword' in hover && hover.keyword === keyword
+                              ? 'border-primary bg-primary/20 text-foreground'
+                              : 'border-shade-44 text-muted-foreground'
+                          }`}
+                        >
+                          {keyword}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-muted-foreground">Aucune requête notée reprise</span>
+                    )}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
 
       {rewrite && (
         <>
-          {rewrite.outdated && (
-            <p className="rounded-lg border border-line-indigo bg-tint-indigo p-2.5 text-xs text-sky-soft">
-              Proposition faite sur une version précédente (contenu, objectif ou requête principale changés) : demandez
-              une nouvelle proposition.
-            </p>
-          )}
-          {rewrite.unverified.length > 0 && (
-            <p className="rounded-lg border border-line-yellow bg-tint-yellow p-2.5 text-xs text-yellow-pale">
-              Éléments absents de la page : <strong>{rewrite.unverified.join(', ')}</strong>. Vérifiez qu’ils sont
-              exacts, ou retirez-les, avant de publier.
-            </p>
-          )}
-          <BeforeAfter keywords={keywords} label="Title" current={rewrite.title.current} proposed={rewrite.title.proposed} hint={`${rewrite.title.proposed.length} caractères (idéal 45 à 60)`} hintWarning={rewrite.title.proposed.length < 45 || rewrite.title.proposed.length > 60} />
-          <BeforeAfter keywords={keywords} label="Méta description" current={rewrite.meta.current} proposed={rewrite.meta.proposed} hint={`${rewrite.meta.proposed.length} caractères (idéal 130 à 155)`} hintWarning={rewrite.meta.proposed.length < 130 || rewrite.meta.proposed.length > 155} />
-          <BeforeAfter keywords={keywords} label="H1" current={rewrite.h1.current} proposed={rewrite.h1.proposed} />
-
-          {rewrite.sections.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground">Sous-titres H2 et ouverture des sections</p>
-              {rewrite.sections.map((section) => (
-                <BeforeAfter
-                  keywords={keywords}
-                  key={section.current}
-                  label="H2"
-                  current={section.current}
-                  proposed={section.intro ? `${section.proposed}\n${section.intro}` : section.proposed}
-                  hint={section.why}
+          {/* La page réécrite en document : un niveau de titre par ligne, ce qui change en clair */}
+          <section aria-label="Plan de la page réécrite" className="overflow-hidden rounded-xl border border-shade-33 bg-shade-1e">
+            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-shade-33 bg-shade-19 px-4 py-2.5">
+              <h4 className="text-sm font-semibold text-foreground">Page réécrite</h4>
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-sky-soft" aria-hidden="true" /> réécrit
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full border border-dashed border-sky-soft" aria-hidden="true" /> à ajouter
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-shade-66" aria-hidden="true" /> gardé
+                </span>
+              </p>
+            </header>
+            <ol className="divide-y divide-shade-33">
+              {outline.map((line, index) => (
+                <OutlineRow
+                  key={`${index}-${line.text}`}
+                  line={line}
+                  compare={compare}
+                  active={activeFor(`line-${index}`, `${line.text} ${line.intro ?? ''}`)}
+                  hoverProps={hoverProps(`line-${index}`)}
                 />
               ))}
-            </div>
-          )}
+            </ol>
+            {outline.some((line) => line.status === 'added') && (
+              <p className="border-t border-shade-33 bg-shade-19 px-4 py-2 text-[11px] text-muted-foreground">
+                Les sections à ajouter sont listées en fin de page : placez-les où elles servent le lecteur.
+              </p>
+            )}
+          </section>
 
-          {rewrite.newSections.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground">Sections à ajouter</p>
-              {rewrite.newSections.map((section) => (
-                <div key={section.heading} className="rounded-lg border border-shade-33 bg-shade-19 p-3">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-foreground">{section.heading}</span>
-                    <CopyButton value={section.intro ? `${section.heading}\n${section.intro}` : section.heading} />
-                  </div>
-                  {section.intro && (
-                    <p className="flex flex-col text-sm text-foreground">
-                      <KeywordText text={section.intro} keywords={keywords} />
-                    </p>
-                  )}
-                  {section.why && <p className="mt-1 text-[11px] text-muted-foreground">{section.why}</p>}
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Proposé par {rewrite.model} le {new Date(rewrite.createdAt).toLocaleDateString('fr-FR')}.
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Proposé par {rewrite.model} le {new Date(rewrite.createdAt).toLocaleDateString('fr-FR')} · à relire avant
+            publication · sans effet sur la note.
           </p>
         </>
       )}
     </div>
+  )
+}
+
+/** Une ligne du plan : pastille de niveau (H1, H2…), titre à sa taille, ouverture de section lisible en dessous */
+function OutlineRow({
+  line,
+  compare,
+  active,
+  hoverProps,
+}: {
+  line: OutlineLine
+  compare: boolean
+  active: Set<string>
+  hoverProps: { onMouseEnter: () => void; onMouseLeave: () => void }
+}) {
+  const kept = line.status === 'kept'
+  const copyValue = line.intro ? `${'#'.repeat(line.level)} ${line.text}\n\n${line.intro}` : `${'#'.repeat(line.level)} ${line.text}`
+  const chipTone =
+    line.status === 'rewritten'
+      ? 'border-sky-soft/60 bg-tint-indigo text-sky-soft'
+      : line.status === 'added'
+        ? 'border-dashed border-sky-soft/70 bg-transparent text-sky-soft'
+        : 'border-shade-44 bg-shade-2b text-muted-foreground'
+  return (
+    <li
+      {...hoverProps}
+      className={`group relative grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-x-3 px-4 transition-colors hover:bg-shade-19 ${
+        kept ? 'py-2' : 'py-3.5'
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`mt-0.5 inline-flex h-6 items-center justify-center rounded-md border font-mono text-[11px] font-semibold ${chipTone}`}
+      >
+        H{line.level}
+      </span>
+      <div className="min-w-0" style={{ paddingLeft: `${Math.max(0, line.level - 2) * 16}px` }}>
+        <p
+          className={`leading-snug ${
+            kept
+              ? 'text-sm font-medium text-muted-foreground'
+              : line.level === 1
+                ? 'text-xl font-extrabold tracking-tight text-foreground'
+                : line.level === 2
+                  ? 'text-base font-bold text-foreground'
+                  : 'text-sm font-semibold text-foreground'
+          }`}
+        >
+          <span className="sr-only">{`Titre de niveau ${line.level}${line.status === 'added' ? ', à ajouter' : line.status === 'rewritten' ? ', réécrit' : ', gardé'} : `}</span>
+          <HighlightedText text={line.text} active={active} />
+          {line.status === 'added' && (
+            <span className="ml-2 rounded-full border border-dashed border-sky-soft/70 px-2 py-0.5 align-middle text-[10px] font-semibold text-sky-soft">
+              à ajouter
+            </span>
+          )}
+        </p>
+        {compare && line.current && (
+          <p className="mt-1 text-xs text-muted-foreground line-through decoration-shade-44">{line.current}</p>
+        )}
+        {line.intro && (
+          <p className="mt-2 max-w-[62ch] border-l-2 border-shade-44 pl-3 text-sm leading-relaxed text-foreground/85">
+            <HighlightedText text={line.intro} active={active} />
+          </p>
+        )}
+        {compare && line.why && <p className="mt-1.5 text-[11px] leading-snug text-sky-soft">↳ {line.why}</p>}
+      </div>
+      {!kept ? (
+        <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <CopyButton value={copyValue} label="Copier ce bloc" iconOnly />
+        </span>
+      ) : (
+        <span />
+      )}
+    </li>
   )
 }

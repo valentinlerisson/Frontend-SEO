@@ -17,12 +17,19 @@ export type IssueSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
  * informe sans être un article (guide, FAQ, glossaire, page « comment ça marche ») : auteur et date non exigés.
  */
 /**
- * Objectif de la page : ce qu'on en attend, donc ce que jugent ses 20 points « sujet ». cover : couvrir le sujet
- * (guide, article) ; convince : présenter et convaincre (offre, accueil) ; convert : amener à une action (devis,
- * inscription, don, rendez-vous) ; reassure : inspirer confiance (qui est derrière, preuves) ; showcase : raconter une
- * réalisation (contexte, travail, résultat) ; direct : aller droit au but (contact, page courte volontaire).
+ * Famille de la page, déduite de son rôle : ce qu'on en attend, donc ce que jugent ses 20 points « sujet ».
+ * inform : informer (article, guide, FAQ) : réponse directe, couverture du sujet, qualité du contenu ;
+ * present : présenter (accueil, offre, liste, marque, réalisation) : proposition claire, preuves, informations utiles
+ * pour choisir ; unscored : contact, mentions légales, page utilitaire : hors note éditoriale.
  */
-export type PageGoal = 'cover' | 'convince' | 'convert' | 'reassure' | 'showcase' | 'direct';
+export type PageFamily = 'inform' | 'present' | 'unscored';
+
+/**
+ * Grille du critère « sujet » (20 pts, prompt v13, 10/11/2026), déduite du rôle : inform (couverture du sujet),
+ * credibility (page institutionnelle : sérieux et poids de l'organisation), skills (accueil, offre, liste,
+ * réalisation : savoir-faire montré). Aucune ne juge la conversion (prix, modalités, action : pistes hors note).
+ */
+export type SubjectGrid = 'inform' | 'credibility' | 'skills';
 
 export type PageRole = 'home' | 'brand' | 'contact' | 'offer' | 'case' | 'article' | 'informational' | 'hub' | 'utility';
 
@@ -128,10 +135,10 @@ export interface RawPageData {
   roleSignals?: RoleSignals;
   /** Rôle corrigé à la main par l'utilisateur : prioritaire sur la détection */
   roleOverride?: PageRole;
-  /** Objectif corrigé à la main par l'utilisateur : prioritaire sur celui déduit du rôle */
-  goalOverride?: PageGoal;
   /** Mots-clés et volumes de la page : les plus recherchés forment le groupe de requêtes notées */
   keywordResearch?: import('./keyword-research').KeywordResearch;
+  /** Recherches hors page (IA + Keyword Planner) : leurs volumes servent aux requêtes cochées par l'utilisateur */
+  keywordOpportunities?: import('./keyword-opportunities').KeywordOpportunities;
   /** Requêtes notées choisies par l'utilisateur (cochées ou ajoutées) : remplacent le choix automatique */
   querySetOverride?: string[];
   bodyText: string;
@@ -203,6 +210,8 @@ export interface TechScoreResult {
   score: number; // 0 - 100
   /** Points de critères non mesurés par le crawl, exclus du dénominateur du score */
   unmeasuredPoints?: number;
+  /** Les mêmes points non mesurés, par catégorie (mêmes clés que `breakdown`) */
+  unmeasuredBreakdown?: TechScoreResult['breakdown'];
   breakdown: {
     coreWebVitals: number; // 0 - 25
     architecture: number; // 0 - 20
@@ -270,14 +279,17 @@ export interface EditorialEvaluation {
   readabilityPoints?: { score: number; max: number; paragraphs?: number; sentences?: number; structure: number };
   /**
    * Réponses de l'IA aux grilles à cases (identifiant de case vers vrai ou faux). Absentes : analyse antérieure,
-   * notée sur ses anciens paliers convertis. `goalKey` : objectif sous lequel la grille de l'objectif a été remplie.
+   * notée sur ses anciens paliers convertis. `goalKey` : grille sous laquelle le critère « sujet » a été rempli
+   * (`SubjectGrid` depuis le prompt v13 ; `present` en v12 ; `cover` et les anciens objectifs avant). `proofQuote` :
+   * preuve concrète copiée par l'IA (famille « présenter »), comptée seulement si le code la retrouve mot pour mot.
    */
   checks?: {
     intent: Record<string, boolean>;
     opening: Record<string, boolean>;
     openingQuote: string;
     goal: Record<string, boolean>;
-    goalKey?: PageGoal;
+    goalKey?: string;
+    proofQuote?: string;
     /** Grille d'intention remplie pour chaque requête notée (prompt v10) */
     intentByQuery?: { query: string; answers: Record<string, boolean> }[];
   };
@@ -324,8 +336,10 @@ export interface EditorialEvaluation {
   /** Rôle jugé par l'IA (corrige la détection automatique si le contenu montre clairement autre chose) */
   role?: PageRole;
   roleReason?: string;
-  /** Objectif sous lequel l'IA a jugé la page (couverture du sujet ou preuves) ; absent : analyse antérieure, jugée comme « cover » */
-  goal?: PageGoal;
+  /** Famille sous laquelle l'IA a jugé la page ; absente : analyse antérieure au prompt v12 */
+  family?: PageFamily;
+  /** Grille du critère « sujet » qui s'applique au rôle actuel (posée par le moteur ; absente pour une page non notée) */
+  subjectGrid?: SubjectGrid;
 }
 
 /** Critères de la note éditoriale */
@@ -408,9 +422,12 @@ export interface SearchInsights {
     score: number;
     titleCritique: string;
     metaCritique: string;
-    suggestedTitle: string;
-    suggestedMeta: string;
-    /** Mots propres des suggestions absents du contenu de la page : à vérifier avant publication */
+    /**
+     * Title, méta et mots non vérifiés proposés par l'analyse : plus demandés à l'IA depuis le 05/11/2026 (Title et méta
+     * rédigés seulement à la demande, dans la réécriture) ; présents dans les analyses plus anciennes, jamais affichés
+     */
+    suggestedTitle?: string;
+    suggestedMeta?: string;
     unverifiedTerms?: string[];
   };
   contentGaps: {
@@ -440,8 +457,8 @@ export interface EditorialAnalysisInput {
   url: string;
   domain: string;
   role: PageRole;
-  /** Objectif de la page (voir `PageGoal`) : décide ce que « couverture » veut dire pour cette page */
-  goal: PageGoal;
+  /** Famille de la page (voir `PageFamily`) : décide ce que jugent les 20 points « sujet » */
+  family: PageFamily;
   title?: string;
   metaDescription?: string;
   h1?: string;
@@ -608,6 +625,64 @@ export interface ReferringDomain {
   };
 }
 
+/** Où se trouve un lien dans la page source, d'après les balises qui l'entourent (mesuré par le code) */
+export type BacklinkLocation = 'content' | 'header' | 'nav' | 'footer' | 'aside' | 'comment' | 'unknown';
+
+/** Nature du texte du lien : marque, adresse, formule générique (« cliquez ici »), image sans texte, autre texte */
+export type BacklinkAnchorType = 'brand' | 'url' | 'generic' | 'image' | 'other';
+
+/** Lien vers le site audité lu dans une page source par la recherche des liens précis (tout est mesuré par le code) */
+export interface DiscoveredBacklink {
+  sourceUrl: string;
+  sourceDomain: string;
+  sourceTitle?: string;
+  targetUrl: string;
+  anchor: string;
+  anchorType: BacklinkAnchorType;
+  nofollow: boolean;
+  sponsored: boolean;
+  ugc: boolean;
+  location: BacklinkLocation;
+  /** Liens vers d'autres sites dans le contenu principal de la page source (plus il est haut, plus le lien est dilué) */
+  externalLinksInContent: number;
+  /** Texte du paragraphe autour du lien (800 caractères au plus), lien marqué [[LIEN : ancre]] */
+  context: string;
+  /** Le domaine source figure parmi les domaines référents du graphe Common Crawl */
+  inCommonCrawl: boolean;
+  /** brand-search : recherche sur le nom de marque ; les deux autres valeurs viennent d'anciens relevés */
+  foundBy: 'brand-search' | 'domain-search' | 'general-search';
+}
+
+/** Page qui cite le site audité sans lien (ou dont le lien n'est pas lisible) : piste de prospection */
+export interface UnlinkedMention {
+  url: string;
+  domain: string;
+  title: string;
+  snippet: string;
+  inCommonCrawl: boolean;
+}
+
+/**
+ * Recherche des liens précis (bouton de l'onglet Backlinks, à part de l'audit) : requêtes Google sur les domaines
+ * référents et sur le nom du site, puis lecture en direct des pages trouvées pour y relever les liens vers le site.
+ */
+export interface BacklinkDiscovery {
+  /** RUNNING en cours ; DONE terminée ; PARTIAL arrêtée avant la fin (budget, captcha) ; ERROR échec */
+  status: 'RUNNING' | 'DONE' | 'PARTIAL' | 'ERROR';
+  message?: string;
+  startedAt: string;
+  /** Dernière avancée : un travail RUNNING sans avancée depuis 15 minutes est considéré comme interrompu */
+  updatedAt: string;
+  finishedAt?: string;
+  provider: string;
+  /** Lots de pages de résultats prévus et faits, pages de résultats réellement demandées à Google (le cache ne compte pas) */
+  searches: { planned: number; done: number; requests: number };
+  /** Pages candidates trouvées par Google, lues, et injoignables (avec la raison, comptée par motif) */
+  pages: { found: number; read: number; unreachable: number; unreachableReasons?: Record<string, number> };
+  links: DiscoveredBacklink[];
+  mentions: UnlinkedMention[];
+}
+
 /** Backlinks du site, relevés pendant le crawl (hors score) */
 export interface BacklinkReport {
   /** DONE : graphe interrogé ; UNAVAILABLE : base Common Crawl absente ; ERROR : échec de la lecture */
@@ -622,6 +697,8 @@ export interface BacklinkReport {
   referringDomains: ReferringDomain[];
   /** Comparaison avec l'audit précédent du projet */
   changes?: { previousRelease?: string; previousDate: string; added: string[]; lost: string[] };
+  /** Liens précis, cherchés à la demande par Google puis lus en direct (absent tant que le bouton n'a pas servi) */
+  discovery?: BacklinkDiscovery;
 }
 
 /** Résultat organique d'une recherche Google */

@@ -1,13 +1,15 @@
 'use client'
 
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Hourglass, Loader2, MapPin, Plus, RotateCw, Search, ShieldAlert, X } from 'lucide-react'
+import { useSearchParams } from 'next/navigation'
+import { Popover } from '@base-ui/react/popover'
 import { AuditHeader } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { AuditStateGate } from './audit-state-gate'
 import { useAudit } from '@/components/providers/audit-provider'
-import { useInspection } from '@/components/providers/inspection-provider'
+import { useInspection, useInspectionNavigation } from '@/components/providers/inspection-provider'
 import { useSettings } from '@/components/providers/settings-provider'
 import type { SubpageItem } from '@/lib/audit-data'
 import { describePagePosition, peopleAlsoAsk } from '@/lib/serp-labels'
@@ -15,12 +17,29 @@ import { normalizeText } from '@/core/domain/scoring/autocomplete-relevance'
 import { MAX_CHOSEN_SERP_QUERIES, MAX_SERP_QUERIES } from '@/core/domain/scoring/query-candidates'
 import type { GeoZone } from '@/core/domain/zones'
 import { ZonePicker } from './zone-picker'
-import { ZonesPanel } from './zones-panel'
-import { LocalVisibilitySection } from './local-visibility-section'
+import { LocalZonesSection } from './local-zones-section'
 import { SerpInsights } from './serp-insights'
+import { CustomizableTable, type ColumnSpec } from '@/components/table/customizable-table'
+import { TableLayoutFooter, TableLayoutToolbar } from '@/components/table/table-layout-controls'
+import { useTableLayout } from '@/components/table/use-table-layout'
+import { usePageMetricColumns } from '@/components/table/page-metrics'
+import type { TableColumn } from '@/lib/table-layout'
+import { ACTION_CLASS, ExpandingLabel, SelectionBar, useSelectionToast } from '@/components/table/selection-bar'
+import { SelectionCheckbox, useRowSelection } from '@/components/table/use-row-selection'
+import { usePageBulkActions } from './use-page-bulk-actions'
 
 /** Pages mesurables par lancement (limite de l'API) */
 const MAX_PER_RUN = 20
+
+/** Colonnes du tableau (largeurs par défaut) : ordre, affichage, épinglage, largeur et densité choisis par chacun */
+const POSITIONING_COLUMNS: TableColumn[] = [
+  { id: 'select', label: 'Sélection', width: 48, fixed: true },
+  { id: 'page', label: 'Page', width: 250, minWidth: 200 },
+  { id: 'queries', label: 'Requêtes à mesurer', width: 240, minWidth: 200 },
+  { id: 'position', label: 'Position', width: 290, minWidth: 220 },
+  { id: 'state', label: 'État', width: 130, minWidth: 110 },
+  { id: 'actions', label: 'Actions', width: 112, minWidth: 100 },
+]
 
 /** Position la plus utile d'un relevé : la page, sinon son lien annexe, sinon le site */
 function historyRank(entry: NonNullable<SubpageItem['serpHistory']>[number]) {
@@ -495,7 +514,7 @@ function PageZoneControl({
 
 export function PositioningView({ projectId }: { projectId: string }) {
   const { audit, state, auditDbId, refreshAudit } = useAudit()
-  const { openInspection } = useInspection()
+  const { openInspection, activeId } = useInspection()
   const { serpPerRun, serpPerDay } = useSettings()
   // Recherches Google déjà envoyées aujourd'hui (tous projets) : relu à l'ouverture et à la fin de chaque mesure
   const [usedToday, setUsedToday] = useState<number | null>(null)
@@ -503,9 +522,24 @@ export function PositioningView({ projectId }: { projectId: string }) {
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [scope, setScope] = useState<'pillars' | 'all'>('pillars')
-  const [selected, setSelected] = useState<string[]>([])
+  // Pages sélectionnées : actions de la barre flottante (mesure Google, zone, fiches PDF, plan d'action)
+  const selection = useRowSelection()
+  const { selected, setSelected } = selection
+  const [toast, setToast] = useSelectionToast()
+  const bulk = usePageBulkActions({ projectId, audit, setToast })
+  const [zoneSaving, setZoneSaving] = useState(false)
+  // Pages envoyées depuis SEO éditorial (« Mesurer dans Google ») : déjà cochées à l'arrivée
+  const searchParams = useSearchParams()
+  const preselect = searchParams.get('pages')
+  useEffect(() => {
+    if (preselect) setSelected(preselect.split(',').filter(Boolean))
+  }, [preselect, setSelected])
   // Requêtes à mesurer modifiées par l'utilisateur (identifiant de page vers liste) ; sinon les requêtes proposées
   const [queryChoices, setQueryChoices] = useState<Record<string, QueryChoice[]>>({})
+  // Métriques ajoutables (masquées par défaut), sauf la position, déjà montrée
+  const metricColumns = usePageMetricColumns<SubpageItem>(audit, (page) => page.id, ['m:position'])
+  const tableColumns = useMemo(() => [...POSITIONING_COLUMNS, ...metricColumns], [metricColumns])
+  const tableLayout = useTableLayout('positionnement', tableColumns)
   const choicesOf = (page: SubpageItem) => queryChoices[page.id] ?? defaultChoices(page)
   const chosenOf = (page: SubpageItem) => choicesOf(page).filter((choice) => choice.on).map((choice) => choice.query)
 
@@ -544,6 +578,9 @@ export function PositioningView({ projectId }: { projectId: string }) {
     }, 3000)
     return () => clearInterval(timer)
   }, [running, refreshAudit])
+
+  // Fiche à côté de la liste : ↑ ↓ et J / K parcourent les pages affichées
+  useInspectionNavigation(pages.map((page) => page.id))
 
   if (state !== 'SUCCESS' || !audit) return <AuditStateGate currentTitle="Positionnement" />
 
@@ -604,8 +641,26 @@ export function PositioningView({ projectId }: { projectId: string }) {
     }
   }
 
-  const toggle = (id: string) =>
-    setSelected((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]))
+  /** Zone propre donnée à toutes les pages choisies (null : retour aux zones du projet) */
+  const setZoneOf = async (ids: string[], zone: { kind: GeoZone['kind']; code: string } | null, label: string) => {
+    setZoneSaving(true)
+    let failed = 0
+    for (const page of allPages.filter((item) => ids.includes(item.id))) {
+      const res = await fetch(`/api/projects/${projectId}/page-zone`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: page.url, zone }),
+      }).catch(() => null)
+      if (!res?.ok) failed++
+    }
+    setZoneSaving(false)
+    await refreshAudit()
+    setToast({
+      text: failed
+        ? `Zone changée sauf pour ${failed} page${failed > 1 ? 's' : ''}`
+        : `${ids.length} page${ids.length > 1 ? 's' : ''} : ${label}`,
+    })
+  }
 
   const visibleIds = pages.map((page) => page.id)
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.includes(id))
@@ -640,6 +695,108 @@ export function PositioningView({ projectId }: { projectId: string }) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
 
+  // En-tête et cellule de chaque colonne du tableau, puis les métriques ajoutables
+  const columnCells: Record<string, Omit<ColumnSpec<SubpageItem>, keyof TableColumn>> = {
+    select: {
+      header: (
+        <input
+          type="checkbox"
+          aria-label="Tout sélectionner"
+          checked={allVisibleSelected}
+          onChange={() =>
+            setSelected((current) =>
+              allVisibleSelected ? current.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...current, ...visibleIds])),
+            )
+          }
+          className="size-4 accent-[#f5e400]"
+        />
+      ),
+      cellClassName: 'align-top',
+      cell: (page) => <SelectionCheckbox selection={selection} id={page.id} order={visibleIds} label={`Sélectionner ${page.path}`} />,
+    },
+    page: {
+      rowHeader: true,
+      cellClassName: 'align-top',
+      cell: (page) => (
+        <>
+          <button type="button" onClick={() => openInspection(page.id)} className="max-w-full text-left">
+            <span className="block truncate font-semibold text-foreground hover:text-primary-ink">{page.title}</span>
+            <span className="block truncate text-sm text-muted-foreground">{page.path}</span>
+          </button>
+          <span className="mt-1 inline-flex items-center gap-1.5">
+            <span className="rounded-full border border-shade-44 px-2 py-0.5 text-[11px] text-muted-foreground">{page.roleLabel}</span>
+            {page.isPillar && (
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-semibold text-primary-ink">Pilier</span>
+            )}
+          </span>
+          <PageZoneControl projectId={projectId} page={page} projectZones={audit.zones ?? []} onSaved={refreshAudit} />
+        </>
+      ),
+    },
+    queries: {
+      cellClassName: 'align-top',
+      cell: (page) => (
+        <QueryChooser
+          page={page}
+          choices={choicesOf(page)}
+          disabled={launching || running}
+          onChange={(choices) => setQueryChoices((prev) => ({ ...prev, [page.id]: choices }))}
+        />
+      ),
+    },
+    position: {
+      cellClassName: 'align-top',
+      cell: (page) => (
+        <>
+          <PositionBadge serp={page.serp} history={page.serpHistory} />
+          {page.serpOutdatedQuery && (
+            <p className="mt-1 max-w-[260px] text-[11px] text-sky-soft">
+              Mesure de l’ancienne requête « {page.serpOutdatedQuery} ». La requête visée est maintenant « {page.targetKeyword} » :
+              relancez l’analyse de cette page.
+            </p>
+          )}
+          {page.serpTargetSkipped && (
+            <p className="mt-1 max-w-[260px] text-[11px] text-sky-soft">
+              Requête cible « {page.targetKeyword} » décochée au dernier lancement : position de « {page.serp?.query} » affichée.
+            </p>
+          )}
+          <QueryPositions page={page} busy={launching || running} onChoose={(query) => chooseQuery(page.id, query)} />
+        </>
+      ),
+    },
+    state: { cellClassName: 'align-top', cell: (page) => <StatusCell serp={page.serp} /> },
+    actions: {
+      cellClassName: 'align-top',
+      cell: (page) => (
+        // Boutons l'un sous l'autre : la colonne reste étroite
+        <div className="flex flex-col items-start gap-1.5">
+          <button
+            type="button"
+            disabled={launching || running || chosenOf(page).length === 0}
+            onClick={() => launch([page.id])}
+            className="text-left text-xs font-semibold text-primary-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {page.serp ? 'Relancer' : 'Analyser'}
+          </button>
+          {(page.serpQueries ?? [page.serp]).some((item) => item?.status === 'DONE') && (
+            <button
+              type="button"
+              onClick={() => setExpanded(expanded === page.id ? null : page.id)}
+              aria-expanded={expanded === page.id}
+              className="inline-flex items-center gap-1 text-left text-xs font-semibold text-primary-ink hover:underline"
+            >
+              {expanded === page.id ? 'Masquer les résultats' : 'Voir les résultats'}
+            </button>
+          )}
+        </div>
+      ),
+    },
+  }
+  const columns: ColumnSpec<SubpageItem>[] = [
+    ...POSITIONING_COLUMNS.map((column) => ({ ...column, ...columnCells[column.id] })),
+    ...metricColumns,
+  ]
+
   return (
     <div className="flex flex-col gap-6">
       <AuditHeader domain={audit.domain} currentTitle="Positionnement" />
@@ -648,26 +805,17 @@ export function PositioningView({ projectId }: { projectId: string }) {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Positionnement Google</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Position de vos pages dans Google sur les requêtes cochées : la requête cible et les recherches
-            génériques proposées (suggestions Google, puis IA), sans le nom de la marque. Gardez, retirez ou ajoutez
-            des requêtes avant de lancer ({MAX_CHOSEN_SERP_QUERIES} au plus par page). Mesure faite dans une fenêtre
-            Chrome locale : cochez les pages à analyser, quelques-unes à la fois.
+            Position de vos pages dans Google sur les requêtes cochées ({MAX_CHOSEN_SERP_QUERIES} au plus par page),
+            mesurée dans une fenêtre Chrome locale.
           </p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-3">
-          <button
-            type="button"
-            disabled={launching || running || selectedCount === 0 || tooMany}
-            onClick={() => launch(selected)}
-            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition-colors hover:bg-[#e0d100] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {launching || running ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Search className="size-4" aria-hidden="true" />
-            )}
-            Analyser la sélection ({selectedCount})
-          </button>
+        <div className="flex shrink-0 flex-col items-start gap-1.5 lg:items-end">
+        <div className="flex flex-wrap items-center gap-3">
+          {running && (
+            <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" /> Mesure en cours…
+            </span>
+          )}
           {pendingCount > 0 && (
             <button
               type="button"
@@ -680,10 +828,23 @@ export function PositioningView({ projectId }: { projectId: string }) {
             </button>
           )}
         </div>
+        {/* Budget de recherches, sous le bouton qui le consomme */}
+        <p className="max-w-md text-xs text-muted-foreground lg:text-right">
+          {usedToday === null ? '…' : `${usedToday} recherches Google sur ${serpPerDay} aujourd’hui`} · {serpPerRun} par
+          lancement · cochez des pages : les actions s’affichent en bas{' '}
+          <Link href="/parametres" className="text-primary-ink hover:underline">
+            Modifier le budget
+          </Link>
+        </p>
+        </div>
       </div>
 
-      <ZonesPanel projectId={projectId} zones={audit.zones ?? []} onSaved={refreshAudit} />
-      {audit.localVisibility && <LocalVisibilitySection data={audit.localVisibility} />}
+      <LocalZonesSection
+        projectId={projectId}
+        zones={audit.zones ?? []}
+        visibility={audit.localVisibility}
+        onSaved={refreshAudit}
+      />
 
       <p className="rounded-xl border border-line-yellow bg-tint-yellow p-3 text-xs text-yellow-pale sm:text-sm">
         Les recherches automatisées vont à l’encontre des conditions d’utilisation de Google. Utilisez un profil Chrome
@@ -692,28 +853,6 @@ export function PositioningView({ projectId }: { projectId: string }) {
         donnent une indication.
       </p>
 
-      <p className="rounded-xl border border-shade-3e bg-shade-1e p-3 text-xs text-muted-foreground sm:text-sm">
-        <span className="font-semibold text-foreground">Budget de recherches Google : </span>
-        {serpPerRun} par lancement · {usedToday === null ? '…' : `${usedToday} sur ${serpPerDay} utilisées aujourd’hui`}
-        {selectedCount > 0 && (
-          <>
-            {' · '}Sélection : <span className="font-semibold text-foreground">{plannedQueries} requête(s)</span>, de{' '}
-            {plannedQueries} à {plannedQueries * 3} recherches (pages 2 et 3 lues si la page n’est pas dans le Top 10).
-            {plannedQueries > allowed
-              ? ` Au-delà de ${allowed}, les recherches restent en attente : requête visée de chaque page d’abord.`
-              : ''}
-          </>
-        )}{' '}
-        <Link href="/parametres" className="text-primary-ink hover:underline">
-          Modifier le budget
-        </Link>
-      </p>
-
-      {tooMany && (
-        <p className="text-sm text-red-soft">
-          Sélection trop grande : {MAX_PER_RUN} pages au maximum par lancement.
-        </p>
-      )}
       {error && <p className="text-sm text-red-soft">{error}</p>}
 
       <section aria-label="Résumé" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -747,177 +886,113 @@ export function PositioningView({ projectId }: { projectId: string }) {
       )}
 
       <section className="glass-card rounded-2xl border p-4 md:p-6">
-        {hasPillars && (
-          <div className="mb-4 inline-flex rounded-xl border border-shade-38 bg-shade-14 p-1">
-            {(
-              [
-                { key: 'pillars', label: 'Pages piliers' },
-                { key: 'all', label: 'Toutes les pages' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setScope(tab.key)}
-                className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition-colors ${
-                  effectiveScope === tab.key
-                    ? 'bg-primary text-primary-foreground shadow'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          {hasPillars ? (
+            <div className="inline-flex rounded-xl border border-shade-38 bg-shade-14 p-1">
+              {(
+                [
+                  { key: 'pillars', label: 'Pages piliers' },
+                  { key: 'all', label: 'Toutes les pages' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setScope(tab.key)}
+                  className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition-colors ${
+                    effectiveScope === tab.key ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span />
+          )}
+          <TableLayoutToolbar api={tableLayout} columns={tableColumns} />
+        </div>
 
-        <div className="overflow-x-auto xl:overflow-visible">
-          {/* Largeur fixe des colonnes, texte qui passe à la ligne : jamais de défilement horizontal */}
-          <table className="w-full table-fixed border-separate border-spacing-0 text-left">
-            <thead>
-              <tr className="text-sm text-foreground">
-                <th scope="col" className="w-10 rounded-l-xl bg-shade-38 px-3 py-3 font-normal">
-                  <input
-                    type="checkbox"
-                    aria-label="Tout sélectionner"
-                    checked={allVisibleSelected}
-                    onChange={() =>
-                      setSelected((current) =>
-                        allVisibleSelected
-                          ? current.filter((id) => !visibleIds.includes(id))
-                          : Array.from(new Set([...current, ...visibleIds])),
-                      )
-                    }
-                    className="size-4 accent-[#f5e400]"
-                  />
-                </th>
-                <th scope="col" className="w-[26%] bg-shade-38 px-3 py-3 font-normal">Page</th>
-                <th scope="col" className="w-[21%] bg-shade-38 px-3 py-3 font-normal">Requêtes à mesurer</th>
-                <th scope="col" className="w-[25%] bg-shade-38 px-3 py-3 font-normal">Position</th>
-                <th scope="col" className="w-[13%] bg-shade-38 px-3 py-3 font-normal">État</th>
-                <th scope="col" className="rounded-r-xl bg-shade-38 px-3 py-3 font-normal">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pages.map((page) => {
-                const serp = page.serp
-                return (
-                  <Fragment key={page.id}>
-                    <tr className="border-b border-shade-3e hover:bg-shade-33/40">
-                      <td className="px-3 py-4 align-top">
-                        <input
-                          type="checkbox"
-                          aria-label={`Sélectionner ${page.path}`}
-                          checked={selected.includes(page.id)}
-                          onChange={() => toggle(page.id)}
-                          className="size-4 accent-[#f5e400]"
-                        />
-                      </td>
-                      <th scope="row" className="px-4 py-4 align-top font-normal">
-                        <button
-                          type="button"
-                          onClick={() => openInspection(page.id)}
-                          className="text-left"
-                        >
-                          <span className="block max-w-xs truncate font-semibold text-foreground hover:text-primary-ink">
-                            {page.title}
-                          </span>
-                          <span className="block text-sm text-muted-foreground">{page.path}</span>
-                        </button>
-                        <span className="mt-1 inline-flex items-center gap-1.5">
-                          <span className="rounded-full border border-shade-44 px-2 py-0.5 text-[11px] text-muted-foreground">
-                            {page.roleLabel}
-                          </span>
-                          {page.isPillar && (
-                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-semibold text-primary-ink">
-                              Pilier
-                            </span>
-                          )}
-                        </span>
-                        <PageZoneControl
-                          projectId={projectId}
-                          page={page}
-                          projectZones={audit.zones ?? []}
-                          onSaved={refreshAudit}
-                        />
-                      </th>
-                      <td className="px-3 py-4 align-top">
-                        <QueryChooser
-                          page={page}
-                          choices={choicesOf(page)}
-                          disabled={launching || running}
-                          onChange={(choices) => setQueryChoices((prev) => ({ ...prev, [page.id]: choices }))}
-                        />
-                      </td>
-                      <td className="px-3 py-4 align-top">
-                        <PositionBadge serp={serp} history={page.serpHistory} />
-                        {page.serpOutdatedQuery && (
-                          <p className="mt-1 max-w-[260px] text-[11px] text-sky-soft">
-                            Mesure de l’ancienne requête « {page.serpOutdatedQuery} ». La requête visée est maintenant
-                            « {page.targetKeyword} » : relancez l’analyse de cette page.
-                          </p>
-                        )}
-                        {page.serpTargetSkipped && (
-                          <p className="mt-1 max-w-[260px] text-[11px] text-sky-soft">
-                            Requête cible « {page.targetKeyword} » décochée au dernier lancement : position de « {serp?.query} »
-                            affichée.
-                          </p>
-                        )}
-                        <QueryPositions
-                          page={page}
-                          busy={launching || running}
-                          onChoose={(query) => chooseQuery(page.id, query)}
-                        />
-                      </td>
+        <CustomizableTable
+          api={tableLayout}
+          columns={columns}
+          rows={pages}
+          rowKey={(page) => page.id}
+          rowSelected={(page) => selected.includes(page.id)}
+          rowActive={(page) => page.id === activeId}
+          onRowClick={(page) => openInspection(page.id, 'serp')}
+          rowClassName={() => 'hover:bg-shade-33/40'}
+          ariaLabel="Pages à mesurer dans Google"
+          empty={<p className="py-10 text-center text-sm text-muted-foreground">Aucune page à afficher.</p>}
+          expandedRow={(page) =>
+            expanded === page.id ? <SerpInsights page={page} domain={audit.domain} auditDbId={auditDbId} onRefresh={refreshAudit} /> : null
+          }
+        />
 
-                      <td className="px-3 py-4 align-top">
-                        <StatusCell serp={serp} />
-                      </td>
-                      <td className="px-3 py-4 align-top">
-                        {/* Boutons l'un sous l'autre : la colonne reste étroite, sans défilement horizontal */}
-                        <div className="flex flex-col items-start gap-1.5">
-                          <button
-                            type="button"
-                            disabled={launching || running || chosenOf(page).length === 0}
-                            onClick={() => launch([page.id])}
-                            className="text-xs font-semibold text-primary-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {serp ? 'Relancer' : 'Analyser'}
-                          </button>
-                          {(page.serpQueries ?? [page.serp]).some((item) => item?.status === 'DONE') && (
-                            <button
-                              type="button"
-                              onClick={() => setExpanded(expanded === page.id ? null : page.id)}
-                              aria-expanded={expanded === page.id}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-primary-ink hover:underline"
-                            >
-                              {expanded === page.id ? 'Masquer les résultats' : 'Voir les résultats'}
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                    {expanded === page.id && (
-                      <tr>
-                        <td colSpan={6} className="bg-shade-24 px-4 py-5 md:px-6">
-                          <SerpInsights page={page} domain={audit.domain} auditDbId={auditDbId} onRefresh={refreshAudit} />
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-              {pages.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
-                    Aucune page à afficher.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div className="mt-4">
+          <TableLayoutFooter api={tableLayout} />
         </div>
       </section>
+
+      <SelectionBar
+        count={selectedCount}
+        noun={['page sélectionnée', 'pages sélectionnées']}
+        info={
+          selectedCount > 0
+            ? `${plannedQueries} à ${plannedQueries * 3} recherches · ${remainingToday === null ? '…' : remainingToday} restantes aujourd’hui`
+            : undefined
+        }
+        onClear={() => setSelected([])}
+        toast={toast}
+        actions={[
+          {
+            id: 'zone',
+            label: 'Changer la zone',
+            render: () => (
+              <Popover.Root>
+                <Popover.Trigger disabled={zoneSaving} className={ACTION_CLASS}>
+                  {zoneSaving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <MapPin className="size-4" aria-hidden="true" />}
+                  <ExpandingLabel>Changer la zone</ExpandingLabel>
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Positioner side="top" align="center" sideOffset={10} className="z-50">
+                    <Popover.Popup className="w-[360px] rounded-xl border border-shade-44 bg-popover p-3 text-sm shadow-xl outline-none">
+                      <Popover.Title className="mb-2 font-semibold text-foreground">
+                        Zone des {selectedCount} page{selectedCount > 1 ? 's' : ''}
+                      </Popover.Title>
+                      <ZonePicker onPick={(zone) => void setZoneOf(selected, { kind: zone.kind, code: zone.code }, `zone ${zone.label}`)} />
+                      <Popover.Close
+                        onClick={() => void setZoneOf(selected, null, 'zones du projet')}
+                        className="mt-2 text-xs font-semibold text-primary-ink hover:underline"
+                      >
+                        Revenir aux zones du projet
+                      </Popover.Close>
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
+            ),
+            onClick: () => undefined,
+          },
+          ...bulk.actionsFor(selected),
+          {
+            id: 'measure',
+            label: running ? 'Mesure en cours…' : 'Mesurer dans Google',
+            icon: <Search className="size-4" aria-hidden="true" />,
+            primary: true,
+            busy: launching || running,
+            disabled: tooMany || selectedCount === 0,
+            title: tooMany
+              ? `${MAX_PER_RUN} pages au plus par lancement : retirez-en ${selectedCount - MAX_PER_RUN}`
+              : plannedQueries > allowed
+                ? `Au-delà de ${allowed} recherches, les autres restent en attente (requête visée de chaque page d’abord)`
+                : 'Pages 2 et 3 lues seulement si la page n’est pas dans le Top 10',
+            onClick: () => launch(selected),
+          },
+        ]}
+      />
+
+      {bulk.sheets}
 
       <PageInspectionSheet />
     </div>

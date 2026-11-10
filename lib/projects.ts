@@ -23,7 +23,7 @@ export type Project = {
   /** Avancement du crawl, de 0 à 100 */
   progress: number
   scores: AuditScores
-  /** Note globale de l'audit (40 % technique, 35 % contenu, 25 % moteurs IA), comme dans la synthèse ; null avant la fin */
+  /** Note globale de l'audit (poids des piliers : PILLAR_WEIGHTS, GEO mis de côté), comme dans la synthèse ; null avant la fin */
   overall: number | null
   lastAuditMinutesAgo: number
 }

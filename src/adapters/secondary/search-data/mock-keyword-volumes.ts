@@ -34,6 +34,10 @@ export class MockKeywordVolumes implements KeywordVolumePort {
     return { seeds: keywords.map((keyword) => this.volume(keyword)), ideas: ideas.slice(0, options.limit ?? 50) };
   }
 
+  public async volumes(keywords: string[]): Promise<KeywordVolume[]> {
+    return [...new Set(keywords.map((keyword) => keyword.trim().toLowerCase()).filter(Boolean))].map((keyword) => this.volume(keyword));
+  }
+
   private volume(keyword: string): KeywordVolume {
     const h = hash(keyword);
     const words = keyword.split(/\s+/).length;

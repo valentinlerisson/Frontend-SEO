@@ -144,7 +144,7 @@ export function keywordSeeds(input: {
 }
 
 /** Mots trop généraux pour relier à eux seuls une idée voisine à la page (racines, sans accents) */
-const GENERIC_TOKENS = new Set([
+export const GENERIC_TOKENS = new Set([
   'agence', 'site', 'service', 'entreprise', 'solution', 'offre', 'conseil', 'groupe', 'societe', 'cabinet', 'prestation',
   'prix', 'devis', 'avi', 'gratuit', 'ligne', 'france', 'outil', 'plateforme', 'logiciel', 'meilleur', 'definition', 'exemple'
 ]);
@@ -153,7 +153,7 @@ const GENERIC_TOKENS = new Set([
 const CORE_DROP = new Set(['outil', 'plateforme', 'logiciel', 'solution', 'demande', 'demo', 'decouvrir', 'nouveau', 'nouvelle', 'meilleur']);
 
 /** Racine grossière : pluriels en s / x confondus avec le singulier (comme les zones chaudes) */
-const stem = (token: string) => (token.length > 3 ? token.replace(/[sx]$/, '') : token);
+export const stem = (token: string) => (token.length > 3 ? token.replace(/[sx]$/, '') : token);
 
 /** Tous les mots porteurs de sens du mot-clé figurent dans le texte (ordre libre, pluriels confondus) */
 export function containsKeyword(text: string, keyword: string): boolean {

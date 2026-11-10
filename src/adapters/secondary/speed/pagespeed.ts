@@ -4,10 +4,24 @@ const ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
 const REQUEST_TIMEOUT_MS = 90_000;
 
 type CruxMetric = { percentile?: number };
+type PsiImage = { data?: string; width?: number; height?: number };
 type PsiResponse = {
   loadingExperience?: { metrics?: Record<string, CruxMetric> };
-  lighthouseResult?: { audits?: Record<string, { numericValue?: number }> };
+  lighthouseResult?: {
+    audits?: Record<string, { numericValue?: number; details?: { type?: string } & PsiImage }>;
+    /** Page entière, capturée en vue mobile */
+    fullPageScreenshot?: { screenshot?: PsiImage };
+  };
 };
+
+/** Image renvoyée par PageSpeed Insights : adresse `data:` (JPEG ou WebP, base64) et dimensions en pixels */
+export type PsiScreenshot = { dataUrl: string; width?: number; height?: number };
+
+/** Captures d'une mesure : premier écran affiché (fin du chargement) et page entière, en vue mobile */
+export type PsiScreenshots = { final?: PsiScreenshot; full?: PsiScreenshot };
+
+const imageOf = (image?: PsiImage): PsiScreenshot | undefined =>
+  image?.data?.startsWith('data:image/') ? { dataUrl: image.data, width: image.width, height: image.height } : undefined;
 
 /**
  * Core Web Vitals via l'API Google PageSpeed Insights, en mobile. Les données de terrain (utilisateurs réels,
@@ -20,6 +34,11 @@ export class PageSpeedInsights {
   }
 
   public static async measure(url: string): Promise<CoreWebVitals | null> {
+    return (await this.analyze(url)).vitals;
+  }
+
+  /** Une mesure PageSpeed : Core Web Vitals et captures de la page (vue mobile) */
+  public static async analyze(url: string): Promise<{ vitals: CoreWebVitals | null; screenshots: PsiScreenshots | null }> {
     const params = new URLSearchParams({
       url,
       strategy: 'mobile',
@@ -33,7 +52,7 @@ export class PageSpeedInsights {
       });
       if (!response.ok) {
         console.warn(`[PageSpeed] ${url} -> HTTP ${response.status}`);
-        return null;
+        return { vitals: null, screenshots: null };
       }
       const data = (await response.json()) as PsiResponse;
       const field = data.loadingExperience?.metrics ?? {};
@@ -68,10 +87,15 @@ export class PageSpeedInsights {
         source.inp = 'field';
       }
 
-      return vitals.lcp === undefined && vitals.cls === undefined && vitals.inp === undefined ? null : vitals;
+      const final = imageOf(lab['final-screenshot']?.details);
+      const full = imageOf(data.lighthouseResult?.fullPageScreenshot?.screenshot);
+      return {
+        vitals: vitals.lcp === undefined && vitals.cls === undefined && vitals.inp === undefined ? null : vitals,
+        screenshots: final || full ? { final, full } : null
+      };
     } catch (err: any) {
       console.warn(`[PageSpeed] ${url} -> ${err?.message ?? err}`);
-      return null;
+      return { vitals: null, screenshots: null };
     }
   }
 }

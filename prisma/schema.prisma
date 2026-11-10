@@ -37,8 +37,38 @@ model Project {
 
   // Cascade delete stricte : supprimer un projet supprime son audit et ses données
   audits      Audit[]
+  fixTasks    FixTask[]
 
   @@map("projects")
+}
+
+/// Plan d'action : une correction à faire = une anomalie sur une page précise (ou sur tout le site), gardée d'un audit
+/// à l'autre par le code de l'anomalie et la clé d'URL de la page
+model FixTask {
+  id             String    @id @default(cuid())
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  code           String    // code de l'anomalie (MISSING_H1…)
+  pageKey        String    // SiteCrawler.urlKey de la page ; "" pour une anomalie du site entier
+  url            String?   // adresse complète de la page, pour l'affichage
+  title          String    // titre de l'anomalie sur cette page (dernier relevé)
+  pillar         String    // TECH, EDITORIAL, GEO
+  severity       String    // CRITICAL, WARNING, INFO (dernier relevé)
+  recommendation String    @default("")
+
+  status         String    @default("TODO") // TODO (à corriger), DOING (en cours), DONE (terminée), REMOVED (retirée du plan)
+  position       Int       @default(0)      // ordre dans sa colonne
+  source         String    @default("AUTO") // AUTO (impact fort ou moyen, ajoutée seule), MANUAL (ajoutée depuis Anomalies)
+  note           String?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  doneAt         DateTime?
+
+  @@unique([projectId, code, pageKey])
+  @@index([projectId, status])
+  @@map("fix_tasks")
 }
 
 model Audit {

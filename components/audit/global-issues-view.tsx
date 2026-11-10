@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { ArrowUpRight, ChevronDown, Search, X } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronDown, ListChecks, Search, X } from 'lucide-react'
 import { AuditHeader, ExportPdfButton } from './audit-header'
 import { PageInspectionSheet } from './page-inspection-sheet'
 import { ImpactBadge } from './impact-badge'
@@ -13,6 +13,8 @@ import { useAudit } from '@/components/providers/audit-provider'
 import { useInspection } from '@/components/providers/inspection-provider'
 import { getInspectionTarget } from '@/lib/issue-routing'
 import type { GlobalIssue, ImpactLevel, IssuePillar } from '@/lib/audit-data'
+import { GEO_ENABLED } from '@/core/domain/features'
+import { useFixPlan } from './use-fix-plan'
 
 type SeverityFilter = 'all' | GlobalIssue['severity']
 type PillarFilter = 'all' | IssuePillar
@@ -63,6 +65,7 @@ export function GlobalIssuesView({ projectId }: { projectId: string }) {
   const [pillar, setPillar] = useState<PillarFilter>('all')
   const [impact, setImpact] = useState<ImpactLevel | 'all'>('all')
   const [query, setQuery] = useState('')
+  const fixPlan = useFixPlan(projectId)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Partial<Record<ImpactLevel, boolean>>>({ low: true, geo: true })
 
@@ -163,7 +166,8 @@ export function GlobalIssuesView({ projectId }: { projectId: string }) {
                   { key: 'all', label: 'Tous', count: issues.filter((i) => severity === 'all' || i.severity === severity).length },
                   { key: 'TECH', label: 'Technique', count: pillarCounts.get('TECH') ?? 0 },
                   { key: 'EDITORIAL', label: 'Éditorial', count: pillarCounts.get('EDITORIAL') ?? 0 },
-                  { key: 'GEO', label: 'GEO', count: pillarCounts.get('GEO') ?? 0 },
+                  // GEO mis de côté (GEO_ENABLED) : ses anomalies ne sont plus transmises, filtre masqué
+                  ...(GEO_ENABLED ? [{ key: 'GEO' as const, label: 'GEO', count: pillarCounts.get('GEO') ?? 0 }] : []),
                 ] as { key: PillarFilter; label: string; count: number }[]
               ).map((tab) => (
                 <button
@@ -377,7 +381,12 @@ export function GlobalIssuesView({ projectId }: { projectId: string }) {
                                   </tbody>
                                 </table>
                               </div>
-                              <div className="pt-3 text-right">
+                              <div className="flex flex-wrap items-center justify-end gap-4 pt-3">
+                                <AddIssueToPlan
+                                  code={issue.code}
+                                  urls={(issue.impactedUrls ?? []).map((url) => url.fullUrl)}
+                                  plan={fixPlan}
+                                />
                                 <Link
                                   href={`/projets/${projectId}/global-issues/${issue.id}`}
                                   className="inline-flex items-center gap-1 text-sm text-primary-ink hover:underline"
@@ -401,5 +410,34 @@ export function GlobalIssuesView({ projectId }: { projectId: string }) {
 
       <PageInspectionSheet />
     </div>
+  )
+}
+
+/** Ajout au plan d'action de toutes les pages d'une anomalie pas encore dans le plan (une tâche par page) */
+function AddIssueToPlan({ code, urls, plan }: { code: string; urls: string[]; plan: ReturnType<typeof useFixPlan> }) {
+  const [busy, setBusy] = useState(false)
+  const missing = urls.filter((url) => !plan.statusOf(code, url))
+  if (plan.loading) return null
+  if (missing.length === 0) {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+        <Check className="size-4" aria-hidden="true" /> Dans le plan d’action
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        await plan.add(missing.map((url) => ({ code, url })))
+        setBusy(false)
+      }}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-shade-44 px-3 py-1 text-sm font-semibold text-foreground transition-colors hover:border-primary disabled:opacity-50"
+    >
+      <ListChecks className="size-4" aria-hidden="true" />
+      {missing.length === urls.length ? 'Ajouter au plan' : `Ajouter les ${missing.length} autres pages au plan`}
+    </button>
   )
 }

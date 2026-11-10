@@ -4,6 +4,8 @@ import { KeywordVolumeUnavailableError, type KeywordIdeasResult, type KeywordVol
 const LANGUAGE_FR = 'languageConstants/1002';
 const GEO_FRANCE = 'geoTargetConstants/2250';
 const MAX_SEEDS = 20;
+/** Mots-clés par demande de volumes seuls (recherches hors page) */
+const MAX_VOLUME_KEYWORDS = 40;
 
 interface IdeaMetrics {
   avgMonthlySearches?: string;
@@ -76,6 +78,18 @@ export class GoogleAdsKeywords implements KeywordVolumePort {
         .filter((volume) => volume.keyword && !known.has(volume.keyword))
         .sort((a, b) => (b.avgMonthlySearches ?? -1) - (a.avgMonthlySearches ?? -1))
     };
+  }
+
+  public async volumes(keywords: string[]): Promise<KeywordVolume[]> {
+    const unique = [...new Set(keywords.map((keyword) => keyword.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_VOLUME_KEYWORDS);
+    if (unique.length === 0) return [];
+    const historical = await this.call<{ results?: IdeaResult[] }>('generateKeywordHistoricalMetrics', {
+      language: LANGUAGE_FR,
+      geoTargetConstants: [GEO_FRANCE],
+      keywordPlanNetwork: 'GOOGLE_SEARCH',
+      keywords: unique
+    });
+    return (historical.results ?? []).map((result) => toVolume(result, result.keywordMetrics));
   }
 
   private async call<T>(method: string, body: unknown, attempt = 1): Promise<T> {

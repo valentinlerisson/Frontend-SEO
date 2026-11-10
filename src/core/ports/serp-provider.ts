@@ -24,7 +24,7 @@ export interface SerpProviderPort {
   readonly id: string;
   /**
    * `domain` : domaine audité, dont les liens annexes (sitelinks) sont aussi extraits ;
-   * `start` : première page lue (0 = première page) ; `fresh` : ignorer le cache (re-test) ;
+   * `start` : première page lue (0 = première page, 9 au plus = la dixième) ; `fresh` : ignorer le cache (re-test) ;
    * `location` : endroit simulé de l'internaute (paramètre uule pour Google, nom de lieu pour une API)
    */
   search(

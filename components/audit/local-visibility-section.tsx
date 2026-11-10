@@ -21,20 +21,20 @@ export function packText(measures: ZoneMeasures): string {
 }
 
 /**
- * Visibilité par zone (onglet Positionnement) : pour chaque zone, pages qui la couvrent, recherches mesurées depuis
- * elle, meilleure position et pack local ; puis les établissements repérés et leurs coordonnées.
+ * Visibilité par zone, sous la carte de l'onglet Positionnement : pour chaque zone, pages qui la couvrent, recherches
+ * mesurées depuis elle, meilleure position et pack local ; puis les établissements repérés et leurs coordonnées.
  */
-export function LocalVisibilitySection({ data }: { data: LocalVisibility }) {
+export function ZoneVisibilityDetails({ data }: { data: LocalVisibility }) {
   const [showAll, setShowAll] = useState(false)
   if (data.zones.length === 0 && data.establishments.length === 0) return null
   const establishments = showAll ? data.establishments : data.establishments.slice(0, 8)
 
   return (
-    <section aria-labelledby="local-title" className="glass-card rounded-2xl border p-4 md:p-6">
-      <h2 id="local-title" className="flex items-center gap-2 text-base font-bold text-foreground">
+    <div>
+      <h3 className="flex items-center gap-2 text-sm font-bold text-foreground">
         <MapPinned className="size-4 text-muted-foreground" aria-hidden="true" />
         Visibilité par zone
-      </h2>
+      </h3>
       <p className="mt-1 text-xs text-muted-foreground">
         Calculée sur les mesures déjà faites, sans recherche Google en plus. Une zone est couverte par une page qui y est
         rattachée, qui la nomme dans son Title ou son H1, ou dont l’adresse s’y trouve (l’adresse du siège, présente sur
@@ -155,6 +155,6 @@ export function LocalVisibilitySection({ data }: { data: LocalVisibility }) {
           )}
         </div>
       )}
-    </section>
+    </div>
   )
 }

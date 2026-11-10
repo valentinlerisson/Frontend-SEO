@@ -24,6 +24,8 @@ export interface KeywordIdeasResult {
 export interface KeywordVolumePort {
   readonly id: string;
   ideas(seeds: string[], options?: { url?: string; limit?: number }): Promise<KeywordIdeasResult>;
+  /** Volumes des seuls mots-clés demandés, sans idée voisine */
+  volumes(keywords: string[]): Promise<KeywordVolume[]>;
 }
 
 /** Accès refusé ou non configuré : le message dit quoi faire */

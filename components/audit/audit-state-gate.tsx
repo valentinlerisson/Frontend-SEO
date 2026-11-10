@@ -47,7 +47,7 @@ export function AuditStateGate({ currentTitle }: { currentTitle: string }) {
           </span>
           <h2 className="mt-4 text-xl font-bold text-foreground">Aucun audit lancé</h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
-            Lancez un crawl pour analyser ce site : les résultats SEO technique, éditorial et GEO apparaîtront ici.
+            Lancez un crawl pour analyser ce site : les résultats SEO technique et éditorial apparaîtront ici.
           </p>
           <Link
             href="/"
@@ -112,7 +112,7 @@ export function PhaseLockBanner({ projectId }: { projectId: string }) {
     >
       <p className="text-sm font-medium text-primary-ink sm:text-base">
         Phase 1 terminée. Sélectionnez de 1 à {maxAiPages} pages piliers dans l’onglet Sous-pages pour
-        lancer l’analyse sémantique et GEO.
+        lancer l’analyse sémantique.
       </p>
       <Link
         href={`/projets/${projectId}/subpages`}

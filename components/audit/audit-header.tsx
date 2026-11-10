@@ -23,22 +23,27 @@ export function AuditHeader({ domain, currentTitle }: AuditHeaderProps) {
 
   return (
     <>
-      <header className="glass sticky top-0 z-20 -mx-4 flex flex-col gap-4 border-b border-b-shade-3e/80 px-4 py-3 shadow-none sm:flex-row sm:items-center sm:justify-between md:-mx-8 md:px-8">
+      {/* Barre flottante et discrète : pilule compacte, collée en haut au défilement ; derrière elle, le fond de la page
+          (lueurs comprises, `topbar-scrim`) efface le contenu qui défile au-dessus */}
+      <div className="topbar-scrim top-0 z-20 -mt-3 pt-3 pb-2">
+      <header className="glass flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-2xl border py-1.5 pr-1.5 pl-4">
         {/* Fil d'ariane */}
-        <nav aria-label="Fil d'ariane" className="flex items-center gap-2 text-base md:text-lg">
-          <Link href="/projets" className="text-muted-foreground hover:text-foreground transition-colors">
+        <nav aria-label="Fil d'ariane" className="flex min-w-0 items-center gap-1.5 text-sm">
+          <Link href="/projets" className="shrink-0 text-muted-foreground transition-colors hover:text-foreground">
             Projets
           </Link>
-          <span className="text-muted-foreground">/</span>
-          <span className="text-muted-foreground font-medium">{domain}</span>
-          <span className="text-muted-foreground">/</span>
-          <span className="text-foreground font-semibold">{currentTitle}</span>
+          <span className="text-muted-foreground/60" aria-hidden="true">/</span>
+          <span className="truncate text-muted-foreground">{domain}</span>
+          <span className="text-muted-foreground/60" aria-hidden="true">/</span>
+          <span className="truncate font-semibold text-foreground" aria-current="page">
+            {currentTitle}
+          </span>
         </nav>
 
         {/* Droite: Statut crawl & bouton Nouvel Audit */}
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {isCrawling && (
-            <div className="inline-flex items-center gap-2.5 rounded-full bg-shade-2b px-4 py-1.5 text-sm md:text-base font-medium text-foreground border border-shade-44">
+            <div className="inline-flex items-center gap-2 rounded-full border border-shade-44 bg-shade-2b px-3 py-1 text-xs font-medium text-foreground">
               {/* Spinner jaune */}
               <span className="relative flex size-4 items-center justify-center">
                 <RotateCw className="size-4 animate-spin text-primary-ink" strokeWidth={2.5} />
@@ -50,8 +55,8 @@ export function AuditHeader({ domain, currentTitle }: AuditHeaderProps) {
           )}
 
           {analyzing && (
-            <div className="inline-flex items-center gap-2.5 rounded-full border border-shade-44 bg-shade-2b px-4 py-1.5 text-sm font-medium text-foreground">
-              <RotateCw className="size-4 animate-spin text-primary-ink" strokeWidth={2.5} aria-hidden="true" />
+            <div className="inline-flex items-center gap-2 rounded-full border border-shade-44 bg-shade-2b px-3 py-1 text-xs font-medium text-foreground">
+              <RotateCw className="size-3.5 animate-spin text-primary-ink" strokeWidth={2.5} aria-hidden="true" />
               Analyse IA en cours ({progress} %)
             </div>
           )}
@@ -59,13 +64,14 @@ export function AuditHeader({ domain, currentTitle }: AuditHeaderProps) {
           <button
             type="button"
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm md:text-base font-bold text-primary-foreground shadow transition-transform hover:scale-[1.02] hover:bg-[#e0d100] active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-ring"
+            className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-primary px-3 text-sm font-bold text-primary-foreground transition-colors hover:bg-[#e0d100] focus-visible:outline-2 focus-visible:outline-ring"
           >
-            <Plus className="size-5" strokeWidth={2.5} aria-hidden="true" />
+            <Plus className="size-4" strokeWidth={2.5} aria-hidden="true" />
             Nouvel audit
           </button>
         </div>
       </header>
+      </div>
 
       {modalOpen && <NewAuditModal isOpen={modalOpen} onClose={() => setModalOpen(false)} />}
     </>

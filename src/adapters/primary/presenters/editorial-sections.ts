@@ -1,9 +1,11 @@
 import { peopleAlsoAsk } from '@/lib/serp-labels';
-import type { EditorialAccordion, InspectionData, InspectionItemData } from '@/lib/audit-data';
-import type { CriterionPoints, EditorialCriterion, EditorialEvaluation, EditorialSignals, PageGoal, PageRole, SearchIntent, SerpAnalysis } from '@/core/domain/types';
+import type { EditorialAccordion, InspectionData, InspectionItemData, QueryMatrixData } from '@/lib/audit-data';
+import type { CriterionPoints, EditorialCriterion, EditorialEvaluation, EditorialSignals, PageFamily, PageRole, SearchIntent, SerpAnalysis } from '@/core/domain/types';
 import { ROLE_LABEL } from '@/core/domain/scoring/page-role';
-import { GOAL_CRITERION, GOAL_LABEL, judgesProof } from '@/core/domain/scoring/page-goal';
-import { queryJudged } from '@/core/domain/scoring/editorial-checks';
+import { PRESENT_CRITERIA, presentCriterion, SUBJECT_GRID_LABEL, subjectCriterionTitle, subjectGridOf } from '@/core/domain/scoring/page-family';
+import { INTENT_CHECKS, queryJudged } from '@/core/domain/scoring/editorial-checks';
+import type { QuerySetMeasure } from '@/core/domain/scoring/query-set';
+import { TECH_THRESHOLDS } from '@/core/domain/scoring/thresholds';
 import { describePagePosition } from '@/lib/serp-labels';
 import { detectSerpIntent } from '@/core/domain/scoring/serp-analysis';
 import { filterRelevantSuggestions, isSameQuery, normalizeText } from '@/core/domain/scoring/autocomplete-relevance';
@@ -50,10 +52,10 @@ const NO_GAP_ROLES: PageRole[] = ['contact', 'brand', 'utility'];
 type Input = {
   editorial: EditorialEvaluation;
   role: PageRole;
-  /** Objectif de la page : décide si la couverture du sujet est jugée, et ce que ses pistes proposent */
-  goal: PageGoal;
-  /** L'analyse de l'IA a été faite sous un autre objectif : ses pistes ne correspondent plus */
-  goalStale?: boolean;
+  /** Famille de la page : décide ce que juge le critère « sujet » et si la page est notée */
+  family: PageFamily;
+  /** L'analyse de l'IA a été faite sous une autre famille : sa grille et ses pistes ne correspondent plus */
+  familyStale?: boolean;
   serp?: SerpAnalysis;
   signals?: EditorialSignals;
   page: { title?: string | null; metaDescription?: string | null; wordCount: number };
@@ -118,20 +120,126 @@ function excluded(block: EditorialAccordion): EditorialAccordion {
     points: undefined,
     action: undefined,
     scoreText: 'Exclu du score',
+    // Affiché avec les indications hors note
+    group: 'diagnostic',
     verdict: `${block.verdict ?? ''} Exclu du score : la requête a été déduite de la page sans être retrouvée dans Google, la juger serait biaisé. Saisissez la requête visée pour l’inclure.`.trim(),
   }
 }
 
-/** Diagnostic hors score : « RAS » ou nombre de points à revoir, même format partout */
+/** Critère jugé mais hors note : constats gardés, ni points ni action */
+function outOfScore(block: EditorialAccordion, reason: string): EditorialAccordion {
+  return {
+    ...block,
+    points: undefined,
+    action: undefined,
+    scoreText: 'Hors note',
+    // Affiché avec les indications hors note, en texte
+    group: 'diagnostic',
+    verdict: `${block.verdict ?? ''} ${reason}`.trim(),
+  };
+}
+
+/** En-têtes courts des cases de la grille d'intention (libellé complet en légende) */
+const INTENT_SHORT: Record<string, string> = { need: 'Besoin', format: 'Format', focus: 'Sujet', audience: 'Public' };
+
+/** Zones chaudes d'une requête : colonnes du tableau et lieu cité dans l'action */
+const ZONE_COLUMNS = [
+  { key: 'title', label: 'Title', full: 'Title (titre affiché dans Google)', place: 'le Title', max: 6 },
+  { key: 'first100Words', label: 'Début', full: '100 premiers mots du contenu', place: 'les 100 premiers mots', max: 5 },
+  { key: 'subheadings', label: 'Sous-titres', full: 'Sous-titres H2 et H3', place: 'un sous-titre H2 ou H3', max: 4 },
+] as const;
+
+/** Grille d'intention par requête notée ; absente si une analyse jugée n'a pas enregistré ses cases */
+function intentMatrix(querySet: QuerySetMeasure[], result: CriterionPoints): QueryMatrixData | undefined {
+  if (querySet.length === 0 || querySet.some((entry) => entry.intent !== null && !entry.intentPassed && !entry.intentFailed)) return undefined;
+  return {
+    source: 'ai',
+    columns: INTENT_CHECKS.map((check) => ({ label: INTENT_SHORT[check.id] ?? check.label, full: check.label, max: check.points })),
+    rows: querySet.map((entry) => ({
+      query: entry.query,
+      weight: entry.weight,
+      volume: entry.volume,
+      total: entry.intent,
+      max: 15,
+      cells: INTENT_CHECKS.map((check) => ({
+        earned:
+          entry.intent === null
+            ? null
+            : entry.intentPassed?.includes(check.label)
+              ? check.points
+              : entry.intentFailed?.includes(check.label)
+                ? 0
+                : null,
+        max: check.points,
+      })),
+    })),
+    result: { earned: result.earned, max: result.max },
+  };
+}
+
+/** Mots absents d'une zone, écrits comme dans la requête (« société », pas la forme comparée « societe ») */
+function queryWords(query: string, tokens: string[]): string[] {
+  const words = query.split(/\s+/);
+  return tokens.map((token) => words.find((word) => normalizeText(word) === token) ?? token);
+}
+
+/** Zones mesurées par requête notée ; absente pour une analyse enregistrée avant le détail par zone */
+function coverageMatrix(querySet: QuerySetMeasure[], result: CriterionPoints): QueryMatrixData | undefined {
+  if (querySet.length === 0 || querySet.some((entry) => !entry.coverage.zones)) return undefined;
+  return {
+    source: 'measured',
+    columns: ZONE_COLUMNS.map((zone) => ({ label: zone.label, full: zone.full, max: zone.max })),
+    rows: querySet.map((entry) => ({
+      query: entry.query,
+      weight: entry.weight,
+      volume: entry.volume,
+      total: entry.coverage.score,
+      max: 15,
+      cells: ZONE_COLUMNS.map((zone) => {
+        const measure = entry.coverage.zones![zone.key];
+        return { earned: measure.points, max: measure.max, missing: queryWords(entry.query, measure.missing) };
+      }),
+    })),
+    result: { earned: result.earned, max: result.max },
+  };
+}
+
+/**
+ * Action tirée des mesures, pas de l'IA : les deux requêtes qui rapportent le plus (poids × points manquants), et
+ * les zones où les placer. Rien à proposer sous un point à gagner.
+ */
+function coverageAction(querySet: QuerySetMeasure[]): string | undefined {
+  const gains = querySet
+    .filter((entry) => entry.coverage.zones)
+    .map((entry) => ({
+      entry,
+      gain: entry.weight * (15 - entry.coverage.score),
+      places: ZONE_COLUMNS.filter((zone) => entry.coverage.zones![zone.key].missing.length > 0).map((zone) => zone.place),
+    }))
+    .filter((item) => item.places.length > 0 && item.gain >= 0.5)
+    .sort((a, b) => b.gain - a.gain)
+    .slice(0, 2);
+  const total = Math.floor(gains.reduce((sum, item) => sum + item.gain, 0));
+  if (gains.length === 0 || total < 1) return undefined;
+  const list = (places: string[]) => (places.length > 1 ? `${places.slice(0, -1).join(', ')} et ${places[places.length - 1]}` : places[0]);
+  const steps = gains.map((item) => `« ${item.entry.query} » dans ${list(item.places)}`);
+  return `Placer ${steps.join(', puis ')} : jusqu’à ${total} pt${total > 1 ? 's' : ''} de plus sur ce critère.`;
+}
+
+/**
+ * Diagnostic hors score, même format partout : « RAS », nombre de points mesurés à revoir, ou pistes de l'IA (estimations
+ * en bleu, jamais comptées comme un problème)
+ */
 function diagnostic(accordion: EditorialAccordion, title: string, action?: string): EditorialAccordion {
   const toFix = accordion.items.filter((item) => item.status === 'warning' || item.status === 'error').length;
+  const hints = accordion.items.filter((item) => item.status === 'info' && item.source === 'ai').length;
   return {
     ...accordion,
     title,
     group: 'diagnostic',
-    scoreText: accordion.scoreText === 'Non disponible' ? 'Non disponible' : toFix === 0 ? 'RAS' : `${toFix} à revoir`,
+    scoreText: accordion.scoreText === 'Non disponible' ? 'Non disponible' : toFix > 0 ? `${toFix} à revoir` : hints > 0 ? 'Pistes de l’IA' : 'RAS',
     verdict: accordion.aiReasoning,
-    action: toFix > 0 ? action : undefined,
+    action: toFix > 0 || hints > 0 ? action : undefined,
   };
 }
 
@@ -211,13 +319,13 @@ export function positionSummary(editorial: EditorialEvaluation, role: PageRole, 
  * Blocs détaillés de l'onglet SEO éditorial, dans un ordre fixe (lib/issue-routing.ts y renvoie par indice) :
  * 0-5 critères notés, 6 ce que montre Google, 7-12 diagnostics hors score.
  */
-export function buildEditorialSections({ editorial, role, goal, goalStale, serp, signals, page }: Input): EditorialAccordion[] {
+export function buildEditorialSections({ editorial, role, family, familyStale, serp, signals, page }: Input): EditorialAccordion[] {
   const search = editorial.search;
   const brand = isBrandQuery(editorial, role);
-  // Sections attendues (estimées par l'IA) : seulement pour une page qui doit couvrir son sujet
-  const gapsApplicable = !NO_GAP_ROLES.includes(role) && goal === 'cover';
-  // Sections lues chez les concurrents (mesurées) : sauf page de marque, contact, utilitaire ou directe
-  const competitorGapsApplicable = !NO_GAP_ROLES.includes(role) && goal !== 'direct';
+  // Sections attendues (estimées par l'IA) : seulement pour une page qui informe
+  const gapsApplicable = family === 'inform';
+  // Sections lues chez les concurrents (mesurées) : sauf page de marque, contact ou utilitaire
+  const competitorGapsApplicable = !NO_GAP_ROLES.includes(role) && family !== 'unscored';
   const query = search?.targetQuery.query;
   const isArticle = role === 'article';
   // Contenu qui répond à une question : article ou contenu informatif (guide, FAQ)
@@ -264,7 +372,8 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
           text: `${cannibal.score < 10 ? 'Conflit probable' : 'Recoupement partiel'} avec ${cannibal.competingUrl}${
             cannibal.sharedQuery ? ` (requête commune : « ${cannibal.sharedQuery} »)` : ''
           }`,
-          status: cannibal.score < 10 ? 'warning' : 'info',
+          // Estimation de l'IA : information, jamais une alerte
+          status: 'info',
           source: 'ai',
         }
       : { text: 'Aucune autre page pilier ne vise la même requête', status: 'valid', source: 'ai' },
@@ -304,13 +413,14 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
 
   // 3. Réponse directe (article) ou proposition de valeur (autres pages)
   const tldr = editorial.primaryContentTldr;
-  const tldrLabel = isArticle ? 'Réponse directe en introduction' : 'Proposition de valeur claire dès l’arrivée';
+  const tldrLabel = answersQuestion ? 'Réponse directe en introduction' : 'Ce qui est proposé et pour qui, dès l’arrivée';
 
   // 4. Couverture du sujet
   const semantic = editorial.semanticDepth;
   const semanticItems: InspectionItemData[] = [];
-  // Objectif de preuve, d'action, de confiance ou de récit : les 20 pts ne jugent pas la couverture d'un sujet
-  const criterion = judgesProof(goal) ? GOAL_CRITERION[goal] : undefined;
+  // Page qui présente : les 20 pts jugent la crédibilité (page institutionnelle) ou le savoir-faire, pas la couverture
+  // d'un sujet
+  const criterion = presentCriterion(role);
   if (semantic.recognizedEntities.length > 0) {
     semanticItems.push({
       text: criterion
@@ -323,14 +433,14 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
   }
   const missingNotions = Array.from(new Set([...semantic.missingKeyEntities, ...(gapsApplicable ? search?.contentGaps.missingEntities ?? [] : [])]));
   // Page qui présente : des pistes pour convaincre ; page qui couvre son sujet : notions et sections à envisager
-  if (criterion && !goalStale) {
+  if (criterion && !familyStale) {
     for (const idea of missingNotions.slice(0, 4)) {
       semanticItems.push({ text: `${criterion.ideaLabel} : ${idea}`, status: 'info', source: 'ai' });
     }
   }
-  if (goalStale) {
+  if (familyStale) {
     semanticItems.push({
-      text: `L’IA a jugé cette page sous un autre objectif que « ${GOAL_LABEL[goal]} » : relancez l’analyse de la page pour obtenir des pistes adaptées.`,
+      text: `L’IA a jugé cette page avant la grille « ${SUBJECT_GRID_LABEL[subjectGridOf(role) ?? 'inform']} » : note provisoire (ancien palier converti), relancez l’analyse de la page pour obtenir la grille et des pistes adaptées.`,
       status: 'info',
     });
   } else if (gapsApplicable) {
@@ -359,7 +469,8 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
   const querySet = editorial.querySet ?? [];
   const queryInferred = querySet.length > 0 ? false : !queryJudged(search);
   const maybeExcluded = (block: EditorialAccordion) => (queryInferred ? excluded(block) : block);
-  // Barème : intention 15, cannibalisation 10, zones chaudes 15, début de page 10, objectif 20, E-E-A-T 10
+  // Barème : intention 15, cannibalisation 10 (mesurée seulement), zones chaudes 15, début de page 10, sujet 20,
+  // E-E-A-T 10
   const intentPoints = pointsOf(editorial, 'intent', editorial.intentMatch.score, 20, 15);
   const cannibalPoints = pointsOf(editorial, 'cannibal', cannibal.score, 20, 10);
   const openingPoints = pointsOf(editorial, 'opening', tldr.score, 15, 10);
@@ -396,6 +507,8 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
           source: 'ai' as const,
         }))
       : []
+  const intentQueries = intentQueryItems.length > 0 ? intentMatrix(querySet, intentPoints) : undefined;
+  const coverageQueries = coverageMatrix(querySet, coveragePoints);
   const cannibalQueryItems: InspectionItemData[] = querySet
     .filter((entry) => entry.cannibal !== null)
     .map((entry) => ({
@@ -410,39 +523,26 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
       ? `Note moyenne des ${querySet.length} requêtes notées, pondérée par leur volume : chacune est cherchée dans le Title (6 pts), le début du texte (5 pts) et les sous-titres (4 pts).`
       : hotVerdict
   const goalGood = goalPoints.earned >= goalPoints.max * 0.75;
-  const scoredBlocks: EditorialAccordion[] = [
-    maybeExcluded(scored(querySet.length > 1 ? 'Réponse aux recherches notées' : 'Réponse à la recherche visée', intentPoints.earned, intentPoints.max, editorial.intentMatch.critique, editorial.intentMatch.actionableAdvice, [...checkItems(intentPoints), ...intentQueryItems, ...intentItems])),
-    scored('Concurrence entre vos pages', cannibalPoints.earned, cannibalPoints.max, cannibal.critique, cannibal.actionableAdvice, [...cannibalQueryItems, ...cannibalItems]),
-    maybeExcluded(scored(
-      'Couverture des recherches',
-      coveragePoints.earned,
-      coveragePoints.max,
-      coverageVerdict,
-      hot.actionableAdvice,
-      zoneItems
-    )),
-    scored(answersQuestion ? 'Réponse directe' : 'Proposition de valeur', openingPoints.earned, openingPoints.max, tldr.critique, tldr.actionableAdvice, [
-      ...(openingPoints.basis === 'checklist'
-        ? checkItems(openingPoints)
-        : [{ text: tldrLabel, status: tldr.hasDirectAnswer ? ('valid' as const) : ('warning' as const), source: 'ai' as const }]),
-      {
-        text: `${page.wordCount} mots sur la page (repère : Google n’impose pas de longueur minimale)`,
-        status: 'info',
-        source: 'measured',
-      },
-    ]),
-    goal === 'direct'
+  // Cannibalisation notée seulement si elle est mesurée dans Google ; l'estimation de l'IA reste un constat
+  const cannibalScored = Boolean(editorial.points?.cannibal);
+  const cannibalBlock = scored('Concurrence entre vos pages', cannibalPoints.earned, cannibalPoints.max, cannibal.critique, cannibal.actionableAdvice, [...cannibalQueryItems, ...cannibalItems]);
+  // Critère « sujet » (20 pts) : couverture du sujet ou présentation et preuves ; sans objet pour une page non notée.
+  // Hors note quand l'analyse a été faite sous l'ancien objectif « aller droit au but » (couverture mise à 0 sans
+  // jugement), en attendant la prochaine analyse
+  const subjectUnjudged = family !== 'unscored' && Boolean(editorial.points) && !editorial.points?.goal;
+  const subjectCandidate: EditorialAccordion =
+    family === 'unscored'
       ? {
-          // Page volontairement directe : la couverture du sujet n'est pas jugée
+          // Page de contact, légale ou utilitaire : ni sujet à couvrir ni offre à présenter
           title: 'Couverture du sujet',
           scoreText: 'Sans objet',
-          aiReasoning: 'Cette page va droit au but : le sujet n’a pas à être couvert en détail. Seuls la promesse et l’action possible sont jugés.',
-          verdict: 'Objectif « aller droit au but » : ces 20 points sortent de la note, qui est calculée sur les autres critères.',
+          aiReasoning: 'Page de contact, légale ou utilitaire : le sujet n’a pas à être couvert en détail.',
+          verdict: 'Page non notée : aucune notion ni section à ajouter.',
           group: 'scored',
-          items: [{ text: 'Page volontairement directe : aucune notion ni section à ajouter', status: 'info' }],
+          items: [{ text: 'Page sans enjeu éditorial : aucune notion ni section à ajouter', status: 'info' }],
         }
       : scored(
-          criterion ? criterion.title : 'Couverture du sujet',
+          subjectCriterionTitle(role),
           goalPoints.earned,
           goalPoints.max,
           criterion
@@ -452,9 +552,51 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
             : goalGood
               ? 'Le sujet est traité de façon complète pour une page de ce type.'
               : 'Le sujet est traité en partie : des notions attendues par l’internaute manquent.',
-          goalStale ? undefined : semantic.actionableAdvice,
+          familyStale ? undefined : semantic.actionableAdvice,
           [...checkItems(goalPoints), ...semanticItems]
+        );
+  const subjectBlock = subjectUnjudged
+    ? outOfScore(subjectCandidate, 'Analyse faite avant ce critère (ancien objectif « aller droit au but ») : relancez l’analyse de la page pour le noter.')
+    : subjectCandidate;
+  const scoredBlocks: EditorialAccordion[] = [
+    maybeExcluded({
+      ...scored(querySet.length > 1 ? 'Réponse aux recherches notées' : 'Réponse à la recherche visée', intentPoints.earned, intentPoints.max, editorial.intentMatch.critique, editorial.intentMatch.actionableAdvice, [
+        ...checkItems(intentPoints),
+        // Tableau par requête quand les cases sont connues ; sinon une ligne de texte par requête
+        ...(intentQueries ? [] : intentQueryItems),
+        ...intentItems,
+      ]),
+      queries: intentQueries,
+    }),
+    cannibalScored
+      ? cannibalBlock
+      : outOfScore(
+          cannibalBlock,
+          'Estimation de l’IA, hors note : la concurrence entre vos pages n’est notée que si elle est mesurée dans Google (onglet Positionnement).'
         ),
+    maybeExcluded({
+      ...scored(
+        'Couverture des recherches',
+        coveragePoints.earned,
+        coveragePoints.max,
+        coverageVerdict,
+        // Action tirée des zones mesurées : l'avis de l'IA peut viser une requête qui n'est pas notée
+        coverageQueries ? coverageAction(querySet) : hot.actionableAdvice,
+        coverageQueries ? [] : zoneItems
+      ),
+      queries: coverageQueries,
+    }),
+    scored(answersQuestion ? 'Réponse directe' : 'Proposition claire', openingPoints.earned, openingPoints.max, tldr.critique, tldr.actionableAdvice, [
+      ...(openingPoints.basis === 'checklist'
+        ? checkItems(openingPoints)
+        : [{ text: tldrLabel, status: tldr.hasDirectAnswer ? ('valid' as const) : ('warning' as const), source: 'ai' as const }]),
+      {
+        text: `${page.wordCount} mots sur la page (repère : Google n’impose pas de longueur minimale)`,
+        status: 'info',
+        source: 'measured',
+      },
+    ]),
+    subjectBlock,
     isArticle
       ? scored(
           'Auteur, date et sources',
@@ -590,8 +732,10 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
   };
 
   // 7. Snippet (hors score)
-  const titleLength = page.title?.length ?? 0;
-  const metaLength = page.metaDescription?.length ?? 0;
+  const titleLength = page.title?.trim().length ?? 0;
+  const metaLength = page.metaDescription?.trim().length ?? 0;
+  // Mêmes repères que la note technique : un Title de 44 caractères s'affiche en entier, rien à revoir
+  const { title: titleRange, metaDescription: metaRange } = TECH_THRESHOLDS;
   const snippetBlock: EditorialAccordion = search
     ? diagnostic(
         {
@@ -600,18 +744,19 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
           aiReasoning: `${search.snippet.titleCritique} ${search.snippet.metaCritique}`.trim(),
           items: [
             {
-              text: `Title : ${titleLength} caractères (lisible en entier entre 45 et 60)`,
-              status: !page.title ? 'error' : titleLength >= 45 && titleLength <= 60 ? 'valid' : 'warning',
+              text: `Title : ${titleLength} caractères (repère : ${titleRange.min} à ${titleRange.max})`,
+              status: !page.title ? 'error' : titleLength >= titleRange.min && titleLength <= titleRange.max ? 'valid' : 'warning',
               source: 'measured',
             },
             {
-              text: `Méta description : ${metaLength} caractères (lisible en entier entre 130 et 155)`,
-              status: !page.metaDescription ? 'error' : metaLength >= 130 && metaLength <= 155 ? 'valid' : 'warning',
+              text: `Méta description : ${metaLength} caractères (repère : ${metaRange.min} à ${metaRange.max})`,
+              status: !page.metaDescription ? 'error' : metaLength >= metaRange.min && metaLength <= metaRange.max ? 'valid' : 'warning',
               source: 'measured',
             },
             {
               text: `Attrait pour le clic : ${search.snippet.score}/100`,
-              status: search.snippet.score >= 60 ? 'valid' : 'warning',
+              // Estimation de l'IA : information, jamais une alerte
+              status: search.snippet.score >= 60 ? 'valid' : 'info',
               source: 'ai',
             },
           ],
@@ -635,7 +780,7 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
                 text: search.local.hasLocalSignals
                   ? 'Adresse, téléphone ou ville visible sur la page'
                   : 'Ni adresse, ni téléphone, ni ville visible sur la page',
-                status: search.local.hasLocalSignals ? 'valid' : 'warning',
+                status: search.local.hasLocalSignals ? 'valid' : 'info',
                 source: 'ai',
               },
             ],
@@ -684,7 +829,7 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
   const measuredQuality = editorial.contentQuality;
   const quote = (value?: string) => (value ? [{ label: `« ${value} »`, tag: 'Extrait vérifié', status: 'valid' as const }] : undefined);
   const qualityBlock: EditorialAccordion =
-    role === 'contact' || role === 'utility' || goal === 'direct'
+    family === 'unscored'
       ? { title: qualityTitle, scoreText: 'Sans objet', aiReasoning: '', items: [], group: 'diagnostic', hidden: true }
       : measuredQuality && editorial.quality
         ? scored(
@@ -741,15 +886,15 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
               ...qualityAccordion(editorial.quality, role),
               items: [
                 ...qualityAccordion(editorial.quality, role).items.map((item) => ({ ...item, source: 'ai' as const })),
-                // Objectif « couvrir le sujet » analysé avant la note : à relancer ; autres objectifs : les preuves sont
-                // déjà jugées par le critère de l'objectif, ce bloc reste un conseil
-                goal === 'cover'
+                // Page qui informe analysée avant la note : à relancer ; page qui présente : la preuve est déjà jugée
+                // dans « Crédibilité » ou « Savoir-faire », ce bloc reste un conseil
+                family === 'inform'
                   ? {
                       text: 'Analyse antérieure à la note « Qualité du contenu » : relancez l’analyse de la page pour l’inclure dans la note.',
                       status: 'info' as const,
                     }
                   : {
-                      text: `Hors score pour l’objectif « ${GOAL_LABEL[goal]} » : les preuves sont déjà jugées dans « ${judgesProof(goal) ? GOAL_CRITERION[goal].title : 'Couverture du sujet'} ».`,
+                      text: `Hors score pour une page qui présente : la preuve est déjà jugée dans « ${(presentCriterion(role) ?? PRESENT_CRITERIA.skills).title} ».`,
                       status: 'info' as const,
                     },
               ],
@@ -762,24 +907,30 @@ export function buildEditorialSections({ editorial, role, goal, goalStale, serp,
             qualityTitle
           );
 
-  return [...scoredBlocks, googleBlock, snippetBlock, localBlock, ...measured, qualityBlock];
+  // Page non notée (contact, légale, utilitaire) : les constats restent, sans points ni note
+  const unscored = (block: EditorialAccordion) =>
+    block.points ? outOfScore(block, 'Page de contact, légale ou utilitaire : exclue de la note éditoriale.') : block;
+  return family === 'unscored'
+    ? [...scoredBlocks.map(unscored), googleBlock, snippetBlock, localBlock, ...measured.map(unscored), qualityBlock]
+    : [...scoredBlocks, googleBlock, snippetBlock, localBlock, ...measured, qualityBlock];
 }
 
 /** Barres de score : uniquement les critères retenus pour la page, en pourcentage de leurs points */
-export function editorialCategories(editorial: EditorialEvaluation, role: PageRole, goal: PageGoal) {
+export function editorialCategories(editorial: EditorialEvaluation, role: PageRole, family: PageFamily) {
+  // Page non notée : aucune barre de score
+  if (family === 'unscored') return [];
   const percent = (item: CriterionPoints) => Math.min(100, Math.max(0, Math.round((item.earned / item.max) * 100)));
   const queryConfirmed = queryJudged(editorial.search);
-  const opening = role === 'article' || role === 'informational' ? 'Réponse directe' : 'Proposition de valeur';
+  const opening = role === 'article' || role === 'informational' ? 'Réponse directe' : 'Proposition claire';
   const bars: { name: string; score: number }[] = [];
   if (queryConfirmed) bars.push({ name: 'Intention', score: percent(pointsOf(editorial, 'intent', editorial.intentMatch.score, 20, 15)) });
-  bars.push({ name: 'Cannibalisation', score: percent(pointsOf(editorial, 'cannibal', editorial.cannibalizationRisk.score, 20, 10)) });
+  // Cannibalisation : seulement quand elle est mesurée dans Google
+  if (editorial.points?.cannibal) bars.push({ name: 'Cannibalisation', score: percent(editorial.points.cannibal) });
   if (queryConfirmed) bars.push({ name: 'Couverture des recherches', score: percent(pointsOf(editorial, 'hotZones', editorial.hotZonesOptimization.score, 15, 15)) });
   bars.push({ name: opening, score: percent(pointsOf(editorial, 'opening', editorial.primaryContentTldr.score, 15, 10)) });
-  if (goal !== 'direct') {
-    bars.push({
-      name: judgesProof(goal) ? GOAL_CRITERION[goal].title : 'Couverture du sujet',
-      score: percent(pointsOf(editorial, 'goal', editorial.semanticDepth.score, 20, 20)),
-    });
+  // Critère « sujet » : absent des points quand l'analyse a été faite sans lui (ancien objectif « aller droit au but »)
+  if (!editorial.points || editorial.points.goal) {
+    bars.push({ name: subjectCriterionTitle(role), score: percent(pointsOf(editorial, 'goal', editorial.semanticDepth.score, 20, 20)) });
   }
   if (role === 'article') bars.push({ name: 'E-E-A-T', score: percent(pointsOf(editorial, 'eeat', editorial.eeatSignals.score, 10, 10)) });
   if (editorial.points?.quality) bars.push({ name: 'Qualité du contenu', score: percent(editorial.points.quality) });

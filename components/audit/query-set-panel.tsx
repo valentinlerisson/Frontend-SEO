@@ -1,14 +1,12 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Plus, RotateCcw, Save } from 'lucide-react'
 import { useAudit } from '@/components/providers/audit-provider'
 import type { InspectionData } from '@/lib/audit-data'
 
 /** Requêtes notées choisies à la main (le choix automatique en garde 4) */
 const MAX_QUERIES = 6
-/** Autres mots-clés montrés avant « Voir tous » */
-const OTHERS_SHOWN = 6
 
 const normalize = (value: string) =>
   value
@@ -27,8 +25,9 @@ const SOURCE_LABEL = {
 
 /**
  * Requêtes notées de la page : la note éditoriale (couverture, intention, concurrence entre pages) est la moyenne de
- * ces requêtes, pondérée par leur volume. L'utilisateur coche, décoche ou ajoute une requête (4 au plus) ; la note est
- * recalculée sans l'IA, l'intention d'une requête ajoutée est jugée à la prochaine analyse.
+ * ces requêtes, pondérée par leur volume. Seules les requêtes notées sont listées : les autres mots-clés se cochent dans
+ * « Mots-clés et volumes de recherche » et « Recherches hors page ». L'utilisateur décoche ou ajoute une requête
+ * (6 au plus) ; la note est recalculée sans l'IA, l'intention d'une requête ajoutée est jugée à la prochaine analyse.
  */
 export function QuerySetPanel({ pageId, editorial }: { pageId: string; editorial: InspectionData['editorial'] }) {
   const { auditDbId, refreshAudit } = useAudit()
@@ -36,20 +35,12 @@ export function QuerySetPanel({ pageId, editorial }: { pageId: string; editorial
   const keywords = editorial.keywords
   const realVolumes = Boolean(keywords?.provider && !keywords.simulated && !keywords.error)
 
-  // Autres requêtes proposées : mots-clés de la page hors groupe, les plus recherchés d'abord
-  const others = useMemo(
-    () =>
-      (keywords?.rows ?? [])
-        .filter((row) => !set.some((entry) => normalize(entry.query) === normalize(row.keyword))),
-    [keywords, set]
-  )
   const initial = set.map((entry) => entry.query)
   const [chosen, setChosen] = useState<string[]>(initial)
   const [extra, setExtra] = useState<string[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showAll, setShowAll] = useState(false)
 
   const changed = JSON.stringify(chosen) !== JSON.stringify(initial)
   const full = chosen.length >= MAX_QUERIES
@@ -106,7 +97,9 @@ export function QuerySetPanel({ pageId, editorial }: { pageId: string; editorial
         {realVolumes
           ? 'Les recherches les plus tapées (Google Keyword Planner), pondérées par leur volume, 50 % au plus chacune.'
           : 'Sans volumes réels : requête cible et recherches proposées que Google suggère, à poids égal.'}{' '}
-        Couverture, intention et concurrence entre vos pages sont calculées pour chacune, puis moyennées. Vous pouvez en noter jusqu’à 6 ; elles arrivent cochées dans Positionnement.
+        Couverture, intention et concurrence entre vos pages sont calculées pour chacune, puis moyennées. Jusqu’à 6 :
+        cochez-en d’autres dans « Mots-clés et volumes de recherche » ou ajoutez-en une ci-dessous ; elles arrivent
+        cochées dans Positionnement.
         {editorial.querySetManual ? ' Liste choisie par vous.' : ''}
       </p>
 
@@ -160,52 +153,31 @@ export function QuerySetPanel({ pageId, editorial }: { pageId: string; editorial
                 </td>
               </tr>
             ))}
-            {[
-              ...(showAll ? others : others.slice(0, OTHERS_SHOWN)).map((row) => ({ query: row.keyword, volume: row.avgMonthlySearches, simulated: keywords?.simulated, relevance: row.relevance })),
-              ...extra
-                .filter((query) => !set.some((entry) => entry.query === query))
-                .map((query) => ({ query, volume: null, simulated: false, relevance: undefined })),
-            ].map(
-              (row) => (
-                <tr key={row.query} className="border-t border-shade-33 align-top opacity-80">
+            {/* Requêtes ajoutées à la main, pas encore enregistrées */}
+            {extra
+              .filter((query) => !set.some((entry) => entry.query === query))
+              .map((query) => (
+                <tr key={query} className="border-t border-shade-33 align-top opacity-80">
                   <td className="py-1.5 pr-2">
                     <input
                       type="checkbox"
-                      checked={chosen.includes(row.query)}
-                      disabled={busy || (!chosen.includes(row.query) && full)}
-                      onChange={() => toggle(row.query)}
-                      aria-label={`Noter la page sur « ${row.query} »`}
+                      checked={chosen.includes(query)}
+                      disabled={busy || (!chosen.includes(query) && full)}
+                      onChange={() => toggle(query)}
+                      aria-label={`Noter la page sur « ${query} »`}
                       className="mt-0.5 size-3.5 accent-[#f5e400]"
                     />
                   </td>
-                  <td className="py-1.5 pr-2 text-foreground">
-                    {row.query}
-                    {row.relevance && row.relevance !== 'match' && (
-                      <span className="block text-[11px] text-sky-soft">{row.relevance === 'broad' ? 'Plus large que la page (IA)' : 'Hors sujet (IA)'}</span>
-                    )}
-                  </td>
-                  <td className={`py-1.5 pr-2 text-right tabular-nums ${row.simulated ? 'text-sky-soft' : 'text-foreground'}`}>
-                    {row.volume === null || row.volume === undefined ? '–' : `${row.volume.toLocaleString('fr-FR')}${row.simulated ? ' (simulé)' : ''}`}
-                  </td>
+                  <td className="py-1.5 pr-2 text-foreground">{query}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-foreground">–</td>
                   <td className="py-1.5 pr-2 text-right text-muted-foreground" colSpan={4}>
-                    Non notée
+                    Notée à l’enregistrement
                   </td>
                 </tr>
-              )
-            )}
+              ))}
           </tbody>
         </table>
       </div>
-
-      {others.length > OTHERS_SHOWN && (
-        <button
-          type="button"
-          onClick={() => setShowAll((value) => !value)}
-          className="text-xs font-semibold text-sky-soft hover:underline"
-        >
-          {showAll ? 'Voir moins de mots-clés' : `Voir tous les mots-clés de la page (${others.length})`}
-        </button>
-      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <input

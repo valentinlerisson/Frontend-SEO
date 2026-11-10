@@ -1,3 +1,4 @@
+import { pageKeyOf } from '@/core/domain/fix-plan';
 import { PageExtractor } from './page-extractor';
 import * as cheerio from 'cheerio';
 import { RawPageData } from '@/core/domain/types';
@@ -157,15 +158,9 @@ export class SiteCrawler {
     return result.page && !result.networkError && result.page.httpStatus < 400 ? result.page : null;
   }
 
-  /** Clé de comparaison d'une URL : nom d'hôte sans www, chemin sans slash final, requête conservée */
+  /** Clé de comparaison d'une URL : nom d'hôte sans www, chemin sans slash final, requête conservée (`pageKeyOf`) */
   public static urlKey(url: string): string {
-    try {
-      const u = new URL(url);
-      const path = u.pathname.length > 1 ? u.pathname.replace(/\/+$/, '') : u.pathname;
-      return `${u.hostname.toLowerCase().replace(/^www\./, '')}${path}${u.search}`;
-    } catch {
-      return url;
-    }
+    return pageKeyOf(url);
   }
 
   /**

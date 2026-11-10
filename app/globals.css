@@ -311,7 +311,7 @@
   --orange-ink: #b45309;
   --inset: rgb(0 0 0 / 0.035);
   --inset-strong: rgb(0 0 0 / 0.05);
-  --primary-ink: #7a6c00;
+  --primary-ink: #eab308;
   --yellow-pale: #713f12;
   --sky-pale: #075985;
   --red-pale: #991b1b;
@@ -369,6 +369,29 @@
   background-attachment: fixed;
 }
 
+/*
+ * Fond derrière la barre du haut flottante : exactement celui de la page (couleur et lueurs d'ambiance, fixées à
+ * l'écran comme elle), qui s'efface vers le bas. Un aplat de couleur masquait la lueur jaune en haut à droite.
+ */
+@utility topbar-scrim {
+  position: sticky;
+  isolation: isolate;
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background-color: var(--background);
+    background-image:
+      radial-gradient(48rem 32rem at 85% -5%, var(--ambient-1), transparent 70%),
+      radial-gradient(44rem 32rem at 5% 105%, var(--ambient-2), transparent 70%),
+      radial-gradient(36rem 26rem at 45% 45%, var(--ambient-3), transparent 70%);
+    background-attachment: fixed;
+    mask-image: linear-gradient(to bottom, black 60%, transparent);
+    pointer-events: none;
+  }
+}
+
 /* Transparence réduite demandée, ou flou non pris en charge : fonds opaques */
 @media (prefers-reduced-transparency: reduce) {
   .glass,
@@ -404,7 +427,14 @@
 
 @media print {
   @page {
-    margin: 14mm;
+    margin: 14mm 14mm 18mm;
+
+    /* Numéro de page en pied (pris en charge par Chrome 131 et plus ; sans effet ailleurs) */
+    @bottom-center {
+      content: counter(page) ' / ' counter(pages);
+      font: 600 8pt system-ui, sans-serif;
+      color: #6b7280;
+    }
   }
 
   html,
@@ -416,12 +446,33 @@
     display: none !important;
   }
 
+  /* Plusieurs fiches imprimées ensemble (Sous-pages) : chacune commence sur une nouvelle page */
+  .print-sheet + .print-sheet {
+    break-before: page;
+  }
+
   .print-sheet {
     display: block !important;
     background: #fff;
-    color: #111;
+    color: #111827;
+    line-height: 1.5;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+
+  /* Titres et tableaux : jamais un titre seul en bas de page, en-tête de tableau répété sur chaque page */
+  .print-sheet h2,
+  .print-sheet h3,
+  .print-sheet h4 {
+    break-after: avoid;
+  }
+
+  .print-sheet thead {
+    display: table-header-group;
+  }
+
+  .print-sheet tbody tr:nth-child(even) > * {
+    background: #fafafb;
   }
 
   /* Rapport d'audit : couverture sur sa propre page, blocs jamais coupés en deux */
@@ -436,4 +487,167 @@
   .report-section h2 {
     break-after: avoid;
   }
+}
+
+/*
+ * Couleurs des graphiques (Synthèse, onglet « L'essentiel ») : vérifiées avec le script du skill dataviz.
+ * Une série = un bleu ; positions Google = trois bleus ordonnés (foncé = mieux classé en clair, clair en sombre) ;
+ * états (à corriger, à consolider, solide) = couleurs de scoreTone, toujours avec un libellé.
+ */
+:root {
+  --viz-accent: #3987e5;
+  --viz-context: #4a4a48;
+  --viz-track: #2c2c2a;
+  --viz-pos-1: #9ec5f4;
+  --viz-pos-2: #5598e7;
+  --viz-pos-3: #256abf;
+  --viz-absent: #6b6a66;
+  --viz-unmeasured: #383835;
+  --viz-good: #12b10f;
+  --viz-warn: #f5e400;
+  --viz-bad: #ef4444;
+  --viz-ring: #1e1e1e;
+  /* Texte posé dans un segment de position (blanc ou presque noir selon la teinte) */
+  --viz-pos-1-ink: #0b0b0b;
+  --viz-pos-2-ink: #0b0b0b;
+  --viz-pos-3-ink: #ffffff;
+  --viz-absent-ink: #ffffff;
+  --viz-unmeasured-ink: #ffffff;
+}
+:root[data-theme='light'] {
+  --viz-accent: #2a78d6;
+  --viz-context: #c3c2b7;
+  --viz-track: #ececee;
+  --viz-pos-1: #1c5cab;
+  --viz-pos-2: #3987e5;
+  --viz-pos-3: #86b6ef;
+  --viz-absent: #898781;
+  --viz-unmeasured: #e1e0d9;
+  --viz-good: #12b10f;
+  --viz-warn: #eab308;
+  --viz-bad: #ef4444;
+  --viz-ring: #ffffff;
+  --viz-pos-1-ink: #ffffff;
+  --viz-pos-2-ink: #ffffff;
+  --viz-pos-3-ink: #0b0b0b;
+  --viz-absent-ink: #0b0b0b;
+  --viz-unmeasured-ink: #0b0b0b;
+}
+
+/*
+ * Carte des zones (onglet Positionnement) : couleurs des positions reprises des graphiques (--viz-pos-*), fond
+ * OpenStreetMap assombri en mode sombre. Les classes sont posées par Leaflet sur les tracés SVG.
+ */
+.zones-map {
+  background: var(--viz-track);
+  font: inherit;
+}
+:root:not([data-theme='light']) .zones-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.85) saturate(0.6);
+}
+.zones-map .leaflet-tooltip {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.zones-map .leaflet-tooltip::before {
+  display: none;
+}
+.zones-map .leaflet-control-attribution {
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.zones-map .leaflet-control-attribution a {
+  color: var(--muted-foreground);
+}
+.zones-map .leaflet-bar a {
+  background: var(--card);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.zones-map .zone-shape {
+  fill-opacity: 0.38;
+  stroke-opacity: 0.95;
+}
+.zones-map .zone-top3 { fill: var(--viz-pos-1); stroke: var(--viz-pos-1); }
+.zones-map .zone-top10 { fill: var(--viz-pos-2); stroke: var(--viz-pos-2); }
+.zones-map .zone-top30 { fill: var(--viz-pos-3); stroke: var(--viz-pos-3); }
+.zones-map .zone-absent { fill: var(--viz-absent); stroke: var(--viz-absent); }
+.zones-map .zone-unmeasured {
+  fill: var(--viz-absent);
+  fill-opacity: 0.12;
+  stroke: var(--muted-foreground);
+  stroke-dasharray: 6 4;
+}
+.zones-map .map-radius {
+  fill: var(--viz-accent);
+  fill-opacity: 0.08;
+  stroke: var(--viz-accent);
+  stroke-dasharray: 8 6;
+}
+.zones-map .map-radius-center {
+  fill: var(--viz-accent);
+  fill-opacity: 1;
+  stroke: var(--viz-ring);
+}
+.zones-map .map-pin {
+  fill: var(--primary);
+  fill-opacity: 1;
+  stroke: #18181b;
+}
+.zones-map .map-commune {
+  fill: var(--card);
+  fill-opacity: 1;
+  stroke: var(--viz-accent);
+  cursor: pointer;
+}
+.zones-map .map-commune:hover {
+  fill: var(--viz-accent);
+}
+
+/*
+ * Tableau personnalisable (components/table/customizable-table.tsx) : teinte de ligne partagée par les cellules
+ * collées à gauche (fond opaque), ombre de la dernière colonne épinglée quand le tableau défile, colonne soulevée
+ * pendant qu'on la glisse.
+ */
+.ct-row {
+  --row-tint: transparent;
+}
+.ct-row:hover {
+  --row-tint: color-mix(in srgb, var(--shade-28) 60%, transparent);
+}
+.ct-row[data-selected] {
+  --row-tint: color-mix(in srgb, var(--tint-yellow-4) 30%, transparent);
+}
+/* Ligne active (fiche ouverte à côté, ou choisie au clavier) : fond teinté et trait jaune à gauche */
+.ct-table .ct-row.ct-row-active {
+  --row-tint: color-mix(in srgb, var(--primary) 14%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.ct-table .ct-row.ct-row-active > :first-child {
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+/* Fond opaque seulement quand le tableau défile : sinon rien ne passe dessous, et la carte en verre reste visible */
+.ct-table.is-scrolled td.ct-sticky,
+.ct-table.is-scrolled tbody th.ct-sticky {
+  background: linear-gradient(var(--row-tint), var(--row-tint)), var(--shade-1e);
+}
+.ct-table .ct-sticky-edge {
+  box-shadow: 10px 0 12px -10px rgb(0 0 0 / 0.5);
+}
+.ct-table .col-lifted {
+  z-index: 6;
+  box-shadow: 0 12px 28px -8px rgb(0 0 0 / 0.45);
+  transition: none;
+}
+.ct-table .col-lifted:not(.ct-sticky) {
+  position: relative;
+}
+.ct-table td.col-lifted,
+.ct-table tbody th.col-lifted {
+  background: var(--shade-1e);
 }

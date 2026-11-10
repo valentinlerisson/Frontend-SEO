@@ -1,5 +1,6 @@
 import type { QueryCandidate, SerpAnalysis } from '../types';
 import type { KeywordResearch } from '../keyword-research';
+import type { KeywordOpportunities } from '../keyword-opportunities';
 import { swapsOneWord } from '../keyword-research';
 import { isSameQuery, normalizeText } from './autocomplete-relevance';
 
@@ -13,8 +14,10 @@ import { isSameQuery, normalizeText } from './autocomplete-relevance';
  * 2. choix de l'utilisateur (requêtes cochées ou ajoutées) ;
  * 3. vrais volumes : les 4 recherches les plus tapées (20 par mois au moins) auxquelles la page répond selon l'IA, sans
  *    variante d'une requête déjà retenue ;
- * 4. sans vrais volumes : les 3 premiers mots-clés choisis par l'IA en lisant la page, à poids égal.
- * Des volumes simulés ne servent jamais à noter.
+ * 4. sans vrais volumes : les 3 premiers mots-clés choisis par l'IA en lisant la page, à poids égal, sauf ceux dont
+ *    Keyword Planner donne moins de 20 recherches par mois.
+ * Des volumes simulés ne servent jamais à noter. Les recherches hors page (keyword-opportunities.ts) ne sont notées que
+ * cochées par l'utilisateur.
  */
 
 export const MAX_QUERY_SET = 4;
@@ -43,8 +46,15 @@ export interface QuerySetEntry {
 
 /** Mesures par requête, enregistrées avec l'analyse */
 export interface QuerySetMeasure extends QuerySetEntry {
-  /** Requête dans le Title, le début du texte et les sous-titres (sur 15) et zones où elle manque */
-  coverage: { score: number; missing: string[] };
+  /**
+   * Requête dans le Title, le début du texte et les sous-titres (sur 15) et zones où elle manque ; `zones` : points et
+   * mots absents de chaque zone (analyses recalculées depuis le 10/11/2026)
+   */
+  coverage: {
+    score: number;
+    missing: string[];
+    zones?: Record<'title' | 'first100Words' | 'subheadings', { points: number; max: number; missing: string[] }>;
+  };
   /** Grille d'intention de l'IA pour cette requête (sur 15) ; null : pas encore jugée */
   intent: number | null;
   /** Cases de la grille d'intention cochées et non cochées pour cette requête */
@@ -90,13 +100,15 @@ function near(a: string, b: string): boolean {
   return isSameQuery(a, b) || isSameQuery(b, a) || swapsOneWord(a, b);
 }
 
-function realVolumes(research?: KeywordResearch): KeywordResearch | undefined {
+function realVolumes<T extends { provider: string | null; simulated: boolean; error?: string }>(research?: T): T | undefined {
   return research?.provider && !research.simulated && !research.error ? research : undefined;
 }
 
 export function buildQuerySet(input: {
   target?: { query: string; confirmed: boolean; isBrand?: boolean };
   research?: KeywordResearch;
+  /** Recherches hors page : jamais notées d'office, leurs volumes servent seulement aux requêtes cochées */
+  opportunities?: KeywordOpportunities;
   candidates?: QueryCandidate[];
   /** Requêtes choisies par l'utilisateur (cochées ou ajoutées) */
   override?: string[];
@@ -111,8 +123,10 @@ export function buildQuerySet(input: {
   // forcément dessus
   const target = given && !given.isBrand ? given : undefined;
   const research = realVolumes(input.research);
+  const opportunities = realVolumes(input.opportunities);
   const volumeOf = (query: string) =>
-    research?.rows.find((row) => normalizeText(row.keyword) === normalizeText(query))?.avgMonthlySearches ?? undefined;
+    [...(research?.rows ?? []), ...(opportunities?.rows ?? [])].find((row) => normalizeText(row.keyword) === normalizeText(query))
+      ?.avgMonthlySearches ?? undefined;
   const sourceOf = (query: string, fallback: QuerySetSource): QuerySetSource =>
     target && normalizeText(target.query) === normalizeText(query) ? 'target' : fallback;
 
@@ -146,11 +160,14 @@ export function buildQuerySet(input: {
     }
   }
 
-  // Sans volume : les premiers mots-clés choisis par l'IA en lisant la page (la requête cible en tête), à poids égal
+  // Sans volume : les premiers mots-clés choisis par l'IA en lisant la page (la requête cible en tête), à poids égal.
+  // Une recherche dont Keyword Planner donne moins de 20 recherches par mois n'est pas notée
   const entries: Omit<QuerySetEntry, 'weight'>[] = target ? [{ query: target.query, source: 'target', confirmed: true }] : [];
   for (const candidate of input.candidates ?? []) {
     if (entries.length >= FALLBACK_QUERY_SET) break;
     if (entries.some((entry) => near(entry.query, candidate.query))) continue;
+    const known = volumeOf(candidate.query);
+    if (known !== undefined && known !== null && known < MIN_SCORED_VOLUME) continue;
     entries.push({ query: candidate.query, source: 'candidate', confirmed: true });
   }
   return entries.map((entry) => ({ ...entry, weight: 1 / entries.length }));

@@ -1,7 +1,9 @@
 # Auditly (BigApp SEO) — guide pour Claude
 
 Application d'audit SEO et GEO en français : elle explore un site, note chaque page sur 100 (technique 40 %,
-éditorial 35 %, GEO 25 %), mesure les positions Google et propose des corrections. L'utilisateur écrit en français ;
+éditorial 35 %, GEO 25 %), mesure les positions Google et propose des corrections. **GEO mis de côté depuis le
+05/11/2026** (`GEO_ENABLED = false`, `src/core/domain/features.ts`) : calculé et enregistré, mais hors des notes
+(technique 53 %, éditorial 47 %) et masqué dans l'interface. L'utilisateur écrit en français ;
 réponds en français.
 
 ## Lire d'abord
@@ -39,18 +41,31 @@ obsolètes (voir leur avertissement) ; `docs/metriques-seo-edenis.html` n'est pl
 - `src/adapters/secondary/` : crawler maison (fetch + Cheerio, pas Crawlee), `llm/` (passerelle OpenAI-compatible
   OmniRoute, Gemini en secours), `search-data/` (Google Autocomplete, Google Ads Keyword Planner, volumes simulés),
   `serp/` (Chrome local via Patchright ou API Serper), `speed/` (PageSpeed Insights), `backlinks/` (Common Crawl),
-  `geo/` (geo.api.gouv.fr).
+  `geo/` (geo.api.gouv.fr ; contours IGN Géoplateforme et communes pour la carte des zones, cache `.data/geo/`).
 - `src/adapters/primary/presenters/` : transformation des données pour l'interface (`audit-presenter.ts`,
   `editorial-sections.ts`, `synthesis-advice.ts`).
-- `app/api/` : routes ; `components/audit/` : écrans et tiroir ; `lib/audit-data.ts` : types de l'interface.
+- `app/api/` : routes ; `components/audit/` : écrans et tiroir ; `components/charts/viz.tsx` : graphiques (SVG, sans
+  bibliothèque, couleurs `--viz-*`) ; `lib/audit-data.ts` : types de l'interface.
+- Skills utiles : `dataviz` (formes, palette vérifiée par script), `dashboard-designer` (installé dans
+  `~/.claude/skills/`).
 
-## Pipeline éditorial actuel (prompt `v11-2026-10-30`)
+## Pipeline éditorial actuel (prompt `v13-2026-11-10`)
 
 L'IA lit la page → problématique + 8 à 12 mots-clés de départ (sans marque ni lieu, vérifiés dans la page) →
 Keyword Planner (volumes, idées voisines ; versions courtes ajoutées) → tri par l'IA (`judgeKeywords` : visé, plus
 large, hors sujet, preuve citée vérifiée) → **requêtes notées** (4 au plus en automatique, 6 à la main, poids =
 part du volume plafonnée à 50 %) → analyse IA (grilles à cases, intention jugée par requête) → notes calculées par
 le code. Sans volume : les 3 premiers mots-clés de l'IA à poids égal. Plus de requête visée saisie par l'utilisateur.
+
+**Familles de pages** (09/11/2026, `scoring/page-family.ts`) : informer (article, guide), présenter (accueil, offre, liste,
+marque, réalisation), non notée (contact, légal : hors note éditoriale du site). Déduites du rôle ; plus d'objectif choisi
+à la main. Cannibalisation notée seulement si mesurée dans Google. Grilles : `editorial-checks.ts` (preuve concrète
+vérifiée mot pour mot pour « présenter »). Grille « sujet » selon le rôle (v13) : crédibilité (marque), savoir-faire
+(accueil, offre, liste, réalisation), couverture (informer) ; aucune case ne juge la conversion (prix, modalités).
+
+**Recherches hors page** (bouton du tiroir, 05/11/2026) : l'IA propose des recherches absentes du contenu, Keyword
+Planner donne leur volume, `keyword-opportunities.ts` donne le statut (intégrable, à confirmer, autre page, hors offre,
+écartée, plus large). Jamais notées d'office : seulement cochées (`querySetOverride`).
 
 ## Variables d'environnement (`.env`, ignoré par git)
 
@@ -79,7 +94,9 @@ sed ou un script sans afficher la valeur. Noms : `LLM_BASE_URL`, `LLM_MODEL`, `L
 - Dernier commit poussé : `8b5fdb3`. **Tout le travail depuis (requêtes notées, Keyword Planner, réécriture,
   reprise après interruption, refonte des documents…) n'est pas commité.**
 - Keyword Planner actif (accès de base Google Ads, compte `906-388-8133`).
-- Modèle IA : `claude/claude-sonnet-4-5` via OmniRoute pour toutes les analyses et le tri des mots-clés. L'accès
+- Modèle IA : `claude/claude-sonnet-4-5-20250929` via OmniRoute pour toutes les analyses et le tri des mots-clés
+  (depuis le 07/11/2026, OmniRoute refuse le nom court `claude/claude-sonnet-4-5` : « not available in the active live
+  catalog » ; `claude-sonnet-4-6`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` répondent aussi). L'accès
   Antigravity (`agy/gpt-oss-120b-medium`) a été refusé par Google (401). L'accès Claude d'OmniRoute repose sur un
   compte connecté : une nouvelle connexion (`/login`) peut le révoquer (`OAuth access token has been revoked`).
 - Le modèle entre dans la clé de cache des analyses : la plupart des pages n'ont pas encore été ré-analysées avec

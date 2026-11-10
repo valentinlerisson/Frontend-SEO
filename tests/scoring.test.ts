@@ -9,13 +9,14 @@ import { GeoScoringEngine, geoMeasuredPoints } from '@/core/domain/scoring/GeoSc
 import { EditorialScoringEngine } from '@/core/domain/scoring/EditorialScoringEngine';
 import { buildSerpAnalysis, localPackRank } from '@/core/domain/scoring/serp-analysis';
 import { TechScoringEngine } from '@/core/domain/scoring/TechScoringEngine';
-import { GlobalScoringEngine } from '@/core/domain/scoring/GlobalScoringEngine';
+import { GlobalScoringEngine, PILLAR_WEIGHTS } from '@/core/domain/scoring/GlobalScoringEngine';
+import { GEO_ENABLED } from '@/core/domain/features';
 import { evaluateCitability, scoreCitability } from '@/core/domain/scoring/citability';
 import { measureHotZones } from '@/core/domain/scoring/hot-zones';
 import { classifyPageRole } from '@/core/domain/scoring/page-role';
-import { defaultGoal, resolveGoal } from '@/core/domain/scoring/page-goal';
+import { familyOf, subjectGridOf } from '@/core/domain/scoring/page-family';
 import { evaluateContentQuality, readabilityPoints } from '@/core/domain/scoring/content-quality';
-import { GOAL_CHECKS, INTENT_CHECKS, openingQuoteVerified, scoreChecks } from '@/core/domain/scoring/editorial-checks';
+import { gridMatches, INTENT_CHECKS, SUBJECT_CHECKS, openingQuoteVerified, proofQuoteVerified, scoreChecks } from '@/core/domain/scoring/editorial-checks';
 import {
   betterMeasuredTarget,
   chooseTargetQuery,
@@ -30,13 +31,20 @@ import { compareReferringDomains } from '@/core/domain/backlinks';
 import { buildKeywordRows, keywordPresence, keywordSeeds, keywordsForSerp, matchEvidenceVerified, trendOf } from '@/core/domain/keyword-research';
 import { MockKeywordVolumes } from '@/adapters/secondary/search-data/mock-keyword-volumes';
 import { buildQuerySet, cannibalFromSerp, cappedWeights, weightedAverage } from '@/core/domain/scoring/query-set';
-import { matchHeading, unverifiedFacts } from '@/core/domain/page-rewrite';
+import { isHistoricalMention, staleMentions } from '@/core/domain/scoring/freshness';
+import { brandsFromDomains, classifyOpportunities, seasonalityOf } from '@/core/domain/keyword-opportunities';
+import { isRewriteOutdated, matchHeading, rewriteMarkdown, rewriteOutline, unverifiedFacts } from '@/core/domain/page-rewrite';
+import { editorialCriteria, pageLosses, siteGains, techCriteria } from '@/core/domain/scoring/score-losses';
+import { pageHealthOf, searchDemandOf } from '@/adapters/primary/presenters/dashboard-data';
 import { isArchivePath, resolveCrawlScope } from '@/core/domain/crawl-scope';
 import { prioritizeSearches, remainingSearches, resolveSerpBudget } from '@/core/domain/serp-budget';
-import { measurementZones, queryForZone, type GeoZone } from '@/core/domain/zones';
-import { detectEstablishments, parseAddress, zoneCoverage } from '@/core/domain/local-visibility';
+import { cleanPlaceName, measurementZones, queryForZone, type GeoZone } from '@/core/domain/zones';
+import { detectEstablishments, parseAddress, zoneBand, zoneCoverage } from '@/core/domain/local-visibility';
+import { communesInRadius, distanceKm, simplifyRing } from '@/core/domain/geo-radius';
+import { pageKeyOf, reorderColumn, verificationOf } from '@/core/domain/fix-plan';
+import { clampWidth, defaultLayout, layoutSummary, mergeLayout, moveColumn, stickyOffsets, toggleHidden, togglePinned, visibleColumns, type TableColumn } from '@/lib/table-layout';
 import { classifyResult, interpretSerp } from '@/core/domain/serp-insights';
-import type { EditorialEvaluation, NapSignals, RawPageData, SearchInsights, SerpAnalysis, SerpResult } from '@/core/domain/types';
+import type { EditorialEvaluation, NapSignals, PageRole, RawPageData, SearchInsights, SerpAnalysis, SerpResult } from '@/core/domain/types';
 
 const DOMAIN = 'exemple.fr';
 
@@ -172,7 +180,7 @@ function evaluationWithQuery(): { raw: RawPageData; evaluation: EditorialEvaluat
     search: {
       targetQuery: { query: QUERY, intent: 'TRANSACTIONAL', source: 'AUTO' },
       autocomplete: { suggestions: [], source: 'UNAVAILABLE' },
-      snippet: { score: 50, titleCritique: '', metaCritique: '', suggestedTitle: '', suggestedMeta: '' },
+      snippet: { score: 50, titleCritique: '', metaCritique: '' },
       contentGaps: { missingSections: [], missingEntities: [], source: 'AI_ESTIMATE' },
       local: { isLocalBusiness: true, city: 'Lyon', hasLocalSignals: true, advice: '' },
       analyzedBy: { engine: 'HEURISTIC' }
@@ -279,23 +287,23 @@ function editorialCoverage(targetQuery: Partial<SearchInsights['targetQuery']>) 
   return EditorialScoringEngine.calculate(raw, evaluation).evaluation!;
 }
 
-test('Éditorial : requête seulement déduite, désormais notée (groupe de requêtes notées), 70 pts mesurés', () => {
+test('Éditorial : requête seulement déduite, désormais notée (groupe de requêtes notées), 60 pts mesurés (cannibalisation estimée hors note)', () => {
   const evaluation = editorialCoverage({ source: 'AUTO', suggestedByGoogle: false });
   assert.equal(evaluation.search!.targetQuery.confidence, 'INFERRED');
   // Les requêtes notées viennent de l'IA qui lit la page ou de Keyword Planner : plus d'exclusion de 30 pts
-  assert.equal(evaluation.coverage!.measured, 70);
+  assert.equal(evaluation.coverage!.measured, 60);
 });
 
-test('Éditorial : requête proposée par Google, confirmée, 70 pts mesurés (E-E-A-T sans objet hors article)', () => {
+test('Éditorial : requête proposée par Google, confirmée, 60 pts mesurés (E-E-A-T sans objet hors article)', () => {
   const evaluation = editorialCoverage({ source: 'AUTO', suggestedByGoogle: true });
   assert.equal(evaluation.search!.targetQuery.confidence, 'CONFIRMED');
-  assert.equal(evaluation.coverage!.measured, 70);
+  assert.equal(evaluation.coverage!.measured, 60);
 });
 
 test('Éditorial : requête saisie à la main, toujours notée', () => {
   const evaluation = editorialCoverage({ source: 'MANUAL' });
   assert.equal(evaluation.search!.targetQuery.confidence, 'MANUAL');
-  assert.equal(evaluation.coverage!.measured, 70);
+  assert.equal(evaluation.coverage!.measured, 60);
 });
 
 // ---------------------------------------------------------------- Score du projet
@@ -316,11 +324,16 @@ test('Projet : moyenne éditoriale pondérée par les points mesurés', () => {
   assert.equal(editorialAvg, Math.round((100 * 90 + 40 * 55) / 145));
 });
 
-test('Projet : 40 % technique, 35 % éditorial, 25 % GEO', () => {
+test('Projet : 40 % technique, 35 % éditorial, 25 % GEO ; GEO mis de côté : 40 et 35 ramenés à 100', () => {
   const { overallScore } = GlobalScoringEngine.computeProjectScore([
     { techScore: 100, isPillar: true, editorialScore: 0, geoScore: 0 }
   ]);
-  assert.equal(overallScore, 40);
+  assert.equal(overallScore, GEO_ENABLED ? 40 : 53);
+  // Note d'une page pilier : moyenne des piliers comptés (veste-maroc : 90, 85 et GEO 47)
+  assert.equal(GlobalScoringEngine.computePageScore(90, 85, 47, true), GEO_ENABLED ? 74 : 88);
+  assert.equal(GlobalScoringEngine.computePageScore(90, undefined, undefined, true), 90);
+  assert.equal(GlobalScoringEngine.computePageScore(90, 85, 47, false), 90);
+  assert.ok(Math.abs(PILLAR_WEIGHTS.tech + PILLAR_WEIGHTS.editorial + PILLAR_WEIGHTS.geo - 1) < 1e-9);
 });
 
 // ---------------------------------------------------------------- Citabilité GEO
@@ -642,11 +655,13 @@ test('Rôle : contenu informatif (guide, FAQ) distinct de l’article daté', ()
   assert.equal(classifyPageRole({ ...base, path: '/blog/nouveau-site/' }), 'article');
 });
 
-test('Éditorial : contenu informatif sans auteur ni date, critère retiré du score (70 pts)', () => {
+test('Éditorial : contenu informatif sans auteur ni date, critère retiré du score (60 pts sans cannibalisation mesurée)', () => {
   const { raw, evaluation } = evaluationWithQuery();
   raw.roleOverride = 'informational';
   const result = EditorialScoringEngine.calculate(raw, { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' } } });
-  assert.equal(result.evaluation?.coverage?.measured, 70);
+  // Intention 15 + couverture des recherches 15 + début de page 10 + couverture du sujet 20
+  assert.equal(result.evaluation?.coverage?.measured, 60);
+  assert.equal(result.evaluation?.family, 'inform');
 });
 
 test('Suggestions Google : variantes plus courtes (sans les lieux, puis 3 et 2 mots principaux)', () => {
@@ -667,56 +682,81 @@ test('Requêtes choisies : ordre gardé, doublons et textes trop longs écartés
   assert.deepEqual(chosenSerpQueries('piano'), []);
 });
 
-test('Objectif de la page : déduit du rôle, sauf choix de l’utilisateur', () => {
-  assert.equal(defaultGoal('article'), 'cover');
-  assert.equal(defaultGoal('informational'), 'cover');
-  assert.equal(defaultGoal('offer'), 'convince');
-  assert.equal(defaultGoal('home'), 'convince');
-  assert.equal(defaultGoal('contact'), 'direct');
-  assert.equal(defaultGoal('case'), 'showcase');
-  assert.equal(defaultGoal('brand'), 'reassure');
-  assert.deepEqual(resolveGoal({ role: 'offer' }), { goal: 'convince', source: 'auto' });
-  assert.deepEqual(resolveGoal({ manual: 'direct', role: 'offer' }), { goal: 'direct', source: 'manual' });
+test('Famille de la page : déduite du rôle (informer, présenter, non notée)', () => {
+  assert.equal(familyOf('article'), 'inform');
+  assert.equal(familyOf('informational'), 'inform');
+  for (const role of ['home', 'offer', 'hub', 'brand', 'case'] as const) assert.equal(familyOf(role), 'present', role);
+  assert.equal(familyOf('contact'), 'unscored');
+  assert.equal(familyOf('utility'), 'unscored');
 });
 
-test('Éditorial : objectif « aller droit au but », le critère de l’objectif sort du score (20 pts de moins)', () => {
+test('Éditorial : page de contact ou légale non notée (note nulle, hors moyenne, aucune alerte de critère)', () => {
   const { raw, evaluation } = evaluationWithQuery();
   const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
-  const weak = { ...confirmed, semanticDepth: { ...confirmed.semanticDepth, score: 0, missingKeyEntities: ['palette de couleurs'] } };
-  raw.roleOverride = 'offer';
-  const covered = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'convince' }, weak);
-  const direct = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'direct' }, weak);
-  assert.equal(covered.evaluation?.coverage?.measured, 70);
-  assert.equal(direct.evaluation?.coverage?.measured, 50);
-  assert.ok(direct.score > covered.score);
-  assert.equal(direct.issues.some((issue) => issue.code === 'SEMANTIC_GAPS'), false);
+  const weak = { ...confirmed, intentMatch: { ...confirmed.intentMatch, score: 0 }, primaryContentTldr: { ...confirmed.primaryContentTldr, score: 0 } };
+  for (const role of ['contact', 'utility'] as const) {
+    const result = EditorialScoringEngine.calculate({ ...raw, roleOverride: role }, weak);
+    assert.equal(result.score, null, role);
+    assert.equal(result.evaluation?.coverage?.measured, 0, role);
+    assert.equal(result.evaluation?.points?.goal, undefined, role);
+    assert.equal(result.issues.some((issue) => ['INTENT_MISMATCH', 'MISSING_TLDR_SUMMARY', 'SEMANTIC_GAPS', 'HOT_ZONES_UNOPTIMIZED'].includes(issue.code)), false, role);
+  }
+  // Exclue de la moyenne du projet (note éditoriale absente)
+  const project = GlobalScoringEngine.computeProjectScore([
+    { techScore: 80, editorialScore: 60, isPillar: true, editorialMeasured: 60 },
+    { techScore: 80, editorialScore: undefined, isPillar: true, editorialMeasured: 0 }
+  ]);
+  assert.equal(project.editorialAvg, 60);
+  assert.equal(GlobalScoringEngine.computePageScore(80, undefined, undefined, true), 80);
 });
 
-test('Éditorial : objectif « présenter et convaincre », pistes en information et non en alerte', () => {
+test('Éditorial : famille « présenter », pistes en information ; « informer », manque en avertissement', () => {
   const { raw, evaluation } = evaluationWithQuery();
   const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
   const weak = { ...confirmed, semanticDepth: { ...confirmed.semanticDepth, score: 5, missingKeyEntities: ['références clients nommées'] } };
-  raw.roleOverride = 'offer';
-  const convince = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'convince' }, weak).issues.find((issue) => issue.code === 'SEMANTIC_GAPS');
-  const cover = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'cover' }, weak).issues.find((issue) => issue.code === 'SEMANTIC_GAPS');
-  assert.equal(convince?.severity, 'INFO');
-  assert.match(convince?.title ?? '', /convaincre/);
-  assert.equal(cover?.severity, 'WARNING');
+  const present = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'offer' }, weak).issues.find((issue) => issue.code === 'SEMANTIC_GAPS');
+  const inform = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'informational' }, weak).issues.find((issue) => issue.code === 'SEMANTIC_GAPS');
+  assert.equal(present?.severity, 'INFO');
+  assert.match(present?.title ?? '', /savoir-faire/);
+  assert.equal(inform?.severity, 'WARNING');
 });
 
-test('Éditorial : objectifs convertir, rassurer et raconter, pistes en information avec leur titre', () => {
+test('Éditorial : accueil, offre, liste, marque et réalisation notés sur le même barème (60 pts)', () => {
   const { raw, evaluation } = evaluationWithQuery();
   const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
-  const weak = { ...confirmed, semanticDepth: { ...confirmed.semanticDepth, score: 5, missingKeyEntities: ['délai de réponse annoncé'] } };
-  raw.roleOverride = 'offer';
-  const expected = { convert: /action/, reassure: /rassurer/, showcase: /raconter|réalisation/ } as const;
-  for (const goal of ['convert', 'reassure', 'showcase'] as const) {
-    const result = EditorialScoringEngine.calculate({ ...raw, goalOverride: goal }, weak);
-    const issue = result.issues.find((item) => item.code === 'SEMANTIC_GAPS');
-    assert.equal(issue?.severity, 'INFO', goal);
-    assert.match(issue?.title ?? '', expected[goal], goal);
-    assert.equal(result.evaluation?.coverage?.measured, 70, goal);
+  for (const role of ['home', 'offer', 'hub', 'brand', 'case'] as const) {
+    const result = EditorialScoringEngine.calculate({ ...raw, roleOverride: role }, confirmed);
+    // Intention 15 + couverture des recherches 15 + début de page 10 + présentation et preuves 20
+    assert.equal(result.evaluation?.coverage?.measured, 60, role);
+    assert.equal(result.evaluation?.contentQuality, undefined, role);
   }
+});
+
+test('Éditorial : analyse faite sous l’ancien objectif « aller droit au but », critère « sujet » hors note (pas de 0 d’office)', () => {
+  const { raw, evaluation } = evaluationWithQuery();
+  const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
+  // L'IA mettait la couverture à 0 sous « aller droit au but » : ce 0 n'est pas un jugement
+  const zeroed = { ...confirmed, semanticDepth: { ...confirmed.semanticDepth, score: 0 } };
+  const checks = { intent: {}, opening: {}, openingQuote: '', goal: {}, goalKey: 'direct' };
+  const result = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'brand' }, { ...zeroed, checks });
+  assert.equal(result.evaluation?.points?.goal, undefined);
+  assert.equal(result.evaluation?.coverage?.measured, 40);
+  // Ancienne analyse sous un objectif de preuve : l'ancien palier reste compté
+  const convinced = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'brand' }, { ...zeroed, checks: { ...checks, goalKey: 'reassure' } });
+  assert.equal(convinced.evaluation?.points?.goal?.basis, 'legacy');
+});
+
+test('Éditorial : cannibalisation notée seulement si mesurée dans Google (estimation de l’IA hors note)', () => {
+  const { raw, evaluation } = evaluationWithQuery();
+  const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
+  const estimated = EditorialScoringEngine.calculate(raw, { ...confirmed, cannibalizationRisk: { ...confirmed.cannibalizationRisk, score: 0, competingUrl: `https://${DOMAIN}/plombier/` } });
+  assert.equal(estimated.evaluation?.points?.cannibal, undefined);
+  assert.equal(estimated.evaluation?.coverage?.measured, 60);
+  // Estimation de l'IA : information, jamais une alerte
+  assert.equal(estimated.issues.find((issue) => issue.code === 'CANNIBALIZATION_RISK')?.severity, 'INFO');
+  const measured = EditorialScoringEngine.calculate(raw, confirmed, serpWith([AUDITED]));
+  assert.deepEqual([measured.evaluation?.points?.cannibal?.earned, measured.evaluation?.points?.cannibal?.basis], [10, 'measured']);
+  assert.equal(measured.evaluation?.coverage?.measured, 70);
 });
 
 test('Qualité du contenu : seuls les extraits retrouvés mot pour mot comptent (15 pts)', () => {
@@ -745,7 +785,7 @@ test('Éditorial : qualité et lisibilité entrent dans le dénominateur seuleme
   const { raw, evaluation } = evaluationWithQuery();
   const confirmed = { ...evaluation, search: { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'MANUAL' as const } } };
   // Analyse antérieure : ni extraits ni signaux mesurés
-  assert.equal(EditorialScoringEngine.calculate(raw, confirmed).evaluation?.coverage?.measured, 70);
+  assert.equal(EditorialScoringEngine.calculate(raw, confirmed).evaluation?.coverage?.measured, 60);
   const quality = {
     firstHandExperience: { detected: true, confidence: 'HIGH' as const, evidence: ['Plombier à Lyon, dépannage rapide.'], advice: '' },
     informationGain: { level: 'MEDIUM' as const, hasOriginalData: false, hasConcreteCases: false, genericFluff: [], mentionsLimits: false, advice: '', originalDataQuote: '', concreteCaseQuote: '', limitsQuote: '' }
@@ -757,20 +797,74 @@ test('Éditorial : qualité et lisibilité entrent dans le dénominateur seuleme
     consentGated: false,
     facts: { counts: [] }
   };
-  const result = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'cover', editorialSignals: signals }, { ...confirmed, quality });
-  assert.equal(result.evaluation?.coverage?.measured, 70 + 15 + 5);
+  const result = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'informational', editorialSignals: signals }, { ...confirmed, quality });
+  assert.equal(result.evaluation?.coverage?.measured, 60 + 15 + 5);
   assert.equal(result.evaluation?.coverage?.total, 100);
   assert.equal(result.evaluation?.contentQuality?.score, 3);
-  // Objectif « présenter et convaincre » : preuves déjà jugées par l'objectif, qualité hors score
+  // Famille « présenter » : preuve déjà jugée dans « Crédibilité » ou « Savoir-faire », qualité hors score
   assert.equal(EditorialScoringEngine.calculate({ ...raw, editorialSignals: signals }, { ...confirmed, quality }).evaluation?.contentQuality, undefined);
   // Page de contact : qualité sans objet
   const contact = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'contact', editorialSignals: signals }, { ...confirmed, quality });
   assert.equal(contact.evaluation?.contentQuality, undefined);
 });
 
+test('Fraîcheur : une année qui date un début (« depuis 2019 », « fondée en ») n’est pas à revoir', () => {
+  const since = { year: 2019, zone: 'CONTENT' as const, excerpt: 'Big Happy propose depuis 2019 une offre allant de la data' };
+  assert.equal(isHistoricalMention(since), true);
+  assert.equal(isHistoricalMention({ year: 1998, zone: 'CONTENT', excerpt: 'Agence fondée en 1998 à Toulouse' }), true);
+  assert.equal(isHistoricalMention({ year: 2015, zone: 'CONTENT', excerpt: 'Entreprise créée en 2015 par deux associés' }), true);
+  const price = { year: 2019, zone: 'CONTENT' as const, excerpt: 'Tarifs en 2019 : 50 € la séance' };
+  assert.equal(isHistoricalMention(price), false);
+  assert.deepEqual(staleMentions([since, price]), [price]);
+});
+
+test('Éditorial : originalité et expérience vécue signalées seulement pour une page qui informe ; zones de chaque requête enregistrées', () => {
+  const { raw, evaluation } = evaluationWithQuery();
+  const quality = {
+    firstHandExperience: { detected: false, confidence: 'LOW' as const, evidence: [], advice: 'Ajouter un retour de terrain.' },
+    informationGain: { level: 'LOW' as const, hasOriginalData: false, hasConcreteCases: false, genericFluff: ['Une équipe passionnée'], mentionsLimits: false, advice: '', originalDataQuote: '', concreteCaseQuote: '', limitsQuote: '' }
+  };
+  const signals: RawPageData['editorialSignals'] = {
+    freshness: { currentYear: 2026, outdatedMentions: [{ year: 2019, zone: 'CONTENT', excerpt: 'Big Happy propose depuis 2019 une offre' }] },
+    readability: { paragraphCount: 5, avgParagraphWords: 40, longParagraphs: 0, sentenceCount: 12, longSentenceRatio: 0.1, listCount: 1, tableCount: 0 },
+    inContentLinks: { total: 3, internal: 3, external: 0, genericAnchors: 0, links: [] },
+    consentGated: false,
+    facts: { counts: [] }
+  };
+  const codes = (role: PageRole) =>
+    EditorialScoringEngine.calculate({ ...raw, roleOverride: role, editorialSignals: signals }, { ...evaluation, quality }).issues.map((issue) => issue.code);
+  // Page qui présente : la preuve est jugée dans « Crédibilité » ou « Savoir-faire », pas de second constat
+  assert.equal(codes('offer').includes('GENERIC_CONTENT'), false);
+  assert.equal(codes('offer').includes('NO_FIRST_HAND_EXPERIENCE'), false);
+  assert.equal(codes('informational').includes('GENERIC_CONTENT'), true);
+  assert.equal(codes('informational').includes('NO_FIRST_HAND_EXPERIENCE'), true);
+  // « depuis 2019 » : année historique, aucun constat de fraîcheur
+  assert.equal(codes('informational').includes('OUTDATED_YEAR_MENTIONS'), false);
+  // Détail par zone de chaque requête notée (tableau de l'onglet Contenu)
+  const entry = EditorialScoringEngine.calculate(raw, evaluation).evaluation?.querySet?.[0];
+  assert.ok(entry?.coverage.zones);
+  const zones = entry.coverage.zones;
+  assert.deepEqual([zones.title.max, zones.first100Words.max, zones.subheadings.max], [6, 5, 4]);
+  assert.equal(zones.title.points + zones.first100Words.points + zones.subheadings.points, entry.coverage.score);
+});
+
 test('Grilles à cases : chaque grille vaut son barème (15, 10, 20) et seules les cases cochées comptent', () => {
   assert.equal(scoreChecks(INTENT_CHECKS, {}).max, 15);
-  for (const checks of Object.values(GOAL_CHECKS)) assert.equal(scoreChecks(checks, {}).max, 20);
+  for (const checks of Object.values(SUBJECT_CHECKS)) assert.equal(scoreChecks(checks, {}).max, 20);
+  // Grille selon le rôle (v13) : crédibilité pour une page institutionnelle, savoir-faire pour les autres pages qui
+  // présentent, aucune pour une page non notée
+  assert.equal(subjectGridOf('brand'), 'credibility');
+  assert.deepEqual((['home', 'offer', 'hub', 'case'] as const).map(subjectGridOf), ['skills', 'skills', 'skills', 'skills']);
+  assert.equal(subjectGridOf('article'), 'inform');
+  assert.equal(subjectGridOf('contact'), null);
+  // Aucune case ne juge la conversion (prix, modalités)
+  assert.equal(Object.values(SUBJECT_CHECKS).flat().some((check) => check.id === 'practical'), false);
+  // Grille de couverture inchangée depuis l'objectif « cover » ; grille « present » (v12) et anciens objectifs non repris
+  assert.equal(gridMatches('cover', 'inform'), true);
+  assert.equal(gridMatches('inform', 'inform'), true);
+  assert.equal(gridMatches('present', 'skills'), false);
+  assert.equal(gridMatches('convince', 'credibility'), false);
+  assert.equal(gridMatches('skills', 'skills'), true);
   const result = scoreChecks(INTENT_CHECKS, { need: true, focus: true, format: false, inconnu: true });
   assert.equal(result.earned, 6 + 3);
   assert.equal(result.failed.length, 2);
@@ -783,6 +877,10 @@ test('Grilles à cases : la phrase d’introduction doit figurer au début de la
   assert.equal(openingQuoteVerified(content, 'nous intervenons en 1 h pour toute fuite'), true);
   assert.equal(openingQuoteVerified(content, 'Phrase très loin dans la page, citée à tort.'), false);
   assert.equal(openingQuoteVerified(content, 'inventée par le modèle et absente'), false);
+  // Preuve concrète : n'importe où dans la page, 20 caractères au moins
+  assert.equal(proofQuoteVerified(content, 'Phrase très loin dans la page, citée à tort.'), true);
+  assert.equal(proofQuoteVerified(content, 'en 1 h'), false);
+  assert.equal(proofQuoteVerified(content, 'Plus de 300 chantiers réalisés'), false);
 });
 
 test('Éditorial : grilles cochées par l’IA, note calculée par le code ; ancien palier converti sans grille', () => {
@@ -791,24 +889,42 @@ test('Éditorial : grilles cochées par l’IA, note calculée par le code ; anc
   // Sans grille (analyse antérieure) : intention 20 sur 20 convertie en 15 sur 15
   const legacy = EditorialScoringEngine.calculate(raw, { ...confirmed, intentMatch: { ...confirmed.intentMatch, score: 20 } });
   assert.deepEqual([legacy.evaluation?.points?.intent?.earned, legacy.evaluation?.points?.intent?.basis], [15, 'legacy']);
+  const withProof = { ...raw, bodyText: 'Plombier à Lyon, dépannage rapide. Plus de 300 chantiers réalisés depuis 2009.' };
   const checks = {
     intent: { need: true, format: true, focus: false, audience: true },
-    opening: { lead: true, distinct: false, action: true },
+    opening: { pitch: true, specific: false },
     openingQuote: 'Plombier à Lyon, dépannage rapide.',
-    goal: { offer: true, proof: false, distinct: true, action: true },
-    goalKey: 'convince' as const
+    goal: { proof: true, distinct: true, how: false, needs: true },
+    goalKey: 'skills',
+    proofQuote: 'Plus de 300 chantiers réalisés depuis 2009.'
   };
-  const result = EditorialScoringEngine.calculate(raw, { ...confirmed, checks });
+  const result = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks });
   const points = result.evaluation!.points!;
   assert.deepEqual([points.intent?.earned, points.intent?.basis], [12, 'checklist']);
-  assert.equal(points.opening?.earned, 4 + 3);
-  assert.equal(points.goal?.earned, 5 + 4 + 5);
-  // Grille remplie sous un autre objectif : ancienne note gardée
-  const stale = EditorialScoringEngine.calculate({ ...raw, goalOverride: 'convert' }, { ...confirmed, checks });
+  assert.equal(points.opening?.earned, 6);
+  assert.equal(points.goal?.earned, 7 + 5 + 4);
+  // Preuve citée absente de la page : case « preuve » refusée
+  const noProof = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: { ...checks, proofQuote: 'Une preuve inventée par le modèle' } });
+  assert.equal(noProof.evaluation?.points?.goal?.earned, 5 + 4);
+  // Grille remplie sous un ancien objectif (« convaincre ») : ancienne note gardée jusqu'à la prochaine analyse
+  const stale = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: { ...checks, goalKey: 'convince' } });
   assert.equal(stale.evaluation?.points?.goal?.basis, 'legacy');
-  // Phrase d'introduction absente de la page : case « lead » refusée
-  const fake = EditorialScoringEngine.calculate(raw, { ...confirmed, checks: { ...checks, openingQuote: 'Une phrase inventée de toutes pièces' } });
-  assert.equal(fake.evaluation?.points?.opening?.earned, 3);
+  // Grille « present » du prompt v12 (avec « conditions pratiques ») : ancienne note gardée jusqu'à la prochaine analyse
+  const v12 = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: { ...checks, goalKey: 'present' } });
+  assert.equal(v12.evaluation?.points?.goal?.basis, 'legacy');
+  // Page institutionnelle : grille « crédibilité » (qui est derrière, repères de solidité)
+  const brandChecks = { ...checks, goal: { proof: true, distinct: false, people: true, track: true }, goalKey: 'credibility' };
+  const brand = EditorialScoringEngine.calculate({ ...withProof, roleOverride: 'brand' }, { ...confirmed, checks: brandChecks });
+  assert.equal(brand.evaluation?.points?.goal?.earned, 7 + 4 + 4);
+  assert.equal(brand.evaluation?.subjectGrid, 'credibility');
+  // Rôle passé de « marque » à « offre » : la grille crédibilité ne vaut plus, ancienne note en attendant l'analyse
+  assert.equal(EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: brandChecks }).evaluation?.points?.goal?.basis, 'legacy');
+  // Phrase d'introduction absente de la page : case « pitch » refusée
+  const fake = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: { ...checks, openingQuote: 'Une phrase inventée de toutes pièces' } });
+  assert.equal(fake.evaluation?.points?.opening?.earned, 0);
+  // Ancienne grille du début de page (proposition de valeur en 3 cases) : ignorée, ancien palier converti
+  const oldOpening = EditorialScoringEngine.calculate(withProof, { ...confirmed, checks: { ...checks, opening: { lead: true, distinct: true, action: true } } });
+  assert.equal(oldOpening.evaluation?.points?.opening?.basis, 'legacy');
   // Grille mal remplie (texte des requêtes à la place des cases) : ignorée, ancienne note gardée plutôt que 0
   const garbled = { 'agence web': false, 'site vitrine': false };
   const malformed = EditorialScoringEngine.calculate(raw, { ...confirmed, checks: { ...checks, opening: garbled, goal: garbled } });
@@ -821,8 +937,9 @@ test('Éditorial : une requête de marque non confirmée reste jugée (intention
   evaluation.search = { ...evaluation.search!, targetQuery: { ...evaluation.search!.targetQuery, source: 'AUTO', suggestedByGoogle: false, isBrand: true } };
   const result = EditorialScoringEngine.calculate({ ...raw, roleOverride: 'contact' }, evaluation).evaluation!;
   assert.equal(result.search!.targetQuery.confidence, 'INFERRED');
-  // Contact (« aller droit au but ») : intention 15 + cannibalisation 10 + zones chaudes 15 + début de page 10
-  assert.equal(result.coverage!.measured, 50);
+  // Contact : critères jugés et affichés, mais page non notée (hors moyenne éditoriale)
+  assert.ok(result.points?.intent && result.points?.hotZones);
+  assert.equal(result.coverage!.measured, 0);
 });
 
 test('Mots-clés : graines sans marque ni lieu, sans doublon, requête visée d’abord', () => {
@@ -1028,4 +1145,323 @@ test('Mots-clés : « visée » seulement avec une phrase de la page qui reprend
   assert.equal(matchEvidenceVerified('aide à domicile', 'Nos EHPAD accueillent les personnes âgées dépendantes.', page), false);
   // Synonyme : un mot commun suffit (« autonomie »)
   assert.equal(matchEvidenceVerified('maintien de l autonomie', 'Accompagnement de la perte d’autonomie au quotidien.', page), true);
+});
+
+test('Points perdus : critères techniques sans les points non mesurés, ramenés sur la note du pilier', () => {
+  const breakdown = { coreWebVitals: 10, architecture: 20, crawlability: 15, securityAndHttp: 15, htmlStructure: 8, metadataAndMedia: 5 };
+  // Vitesse : 15 pts non mesurés (INP, CLS) sur 25 ; hiérarchie Hn : 7 pts hors score
+  const unmeasured = { coreWebVitals: 15, architecture: 0, crawlability: 0, securityAndHttp: 0, htmlStructure: 7, metadataAndMedia: 0 };
+  const criteria = techCriteria(breakdown, unmeasured);
+  assert.equal(criteria.find((c) => c.key === 'coreWebVitals')?.max, 10);
+  assert.equal(criteria.find((c) => c.key === 'htmlStructure')?.max, 8);
+  // Seul « Title, méta, alt » perd des points : 5 sur 78 mesurés → 6,4 pts de la note technique
+  const losses = pageLosses(criteria);
+  assert.deepEqual(losses.map((l) => l.key), ['metadataAndMedia']);
+  assert.ok(Math.abs(losses[0].lost - (5 / 78) * 100) < 1e-9);
+});
+
+test('Points perdus : gain du site pondéré par les points mesurés, puis par le poids du pilier', () => {
+  const page = (earned: number) => editorialCriteria({ hotZones: { earned, max: 15, basis: 'measured' }, goal: { earned: 20, max: 20, basis: 'checklist' } });
+  const gains = siteGains([page(5), page(15)]);
+  // 10 pts perdus sur 70 mesurés → 14,3 pts de note éditoriale, × le poids du pilier sur la note globale (0,35, ou
+  // 0,35 / 0,75 quand le GEO est mis de côté)
+  assert.equal(gains.length, 1);
+  assert.equal(gains[0].pages, 1);
+  assert.ok(Math.abs(gains[0].pillarPoints - (10 / 70) * 100) < 1e-9);
+  assert.ok(Math.abs(gains[0].globalPoints - (10 / 70) * 100 * (GEO_ENABLED ? 0.35 : 0.35 / 0.75)) < 1e-9);
+});
+
+test('Synthèse : demande de recherche par position (une fois par requête, meilleure position) et état des pages', () => {
+  const measure = (query: string, volume: number | undefined, position?: number | null) => ({
+    query, weight: 0.5, volume, source: 'volume', confirmed: true, coverage: { score: 10, missing: [] }, intent: 12, cannibal: null,
+    ...(position !== undefined ? { position } : {})
+  });
+  const pillar = (path: string, set: unknown[], scores: [number, number, number]) => ({
+    url: `https://a.fr${path}`, path, httpStatus: 200, depth: 1, isPillar: true, isIndexable: true, wordCount: 500, inlinksCount: 3,
+    outlinksCount: 3, techScore: scores[0], editorialScore: scores[1], geoScore: scores[2], metricsRaw: null,
+    aiEvaluationRaw: JSON.stringify({ editorial: { querySet: set } })
+  });
+  const pages = [
+    pillar('/', [measure('agence web', 6600, 4), measure('site vitrine', 1600)], [85, 55, 70]),
+    pillar('/offre/', [measure('agence web', 6600, 12), measure('refonte site', 260, null)], [40, 65, 82])
+  ];
+  const demand = searchDemandOf(pages as never)!;
+  assert.equal(demand.totalQueries, 3);
+  assert.deepEqual(demand.buckets.map((b) => [b.key, b.volume]), [['top3', 0], ['top10', 6600], ['top30', 0], ['absent', 260], ['unmeasured', 1600]]);
+  assert.deepEqual(demand.opportunities.map((o) => o.query), ['site vitrine', 'refonte site']);
+  assert.deepEqual(pageHealthOf(pages as never, true).map((h) => [h.pillar, h.counts.weak, h.counts.medium, h.counts.strong]), [
+    ['tech', 1, 0, 1], ['editorial', 1, 1, 0], ...(GEO_ENABLED ? [['geo', 0, 1, 1]] : [])
+  ]);
+});
+
+test('Recherches hors page : statut calculé par le code (mots de la page, autre page, hors offre, volume, marque d’un tiers)', () => {
+  const page = {
+    title: 'Veste Maroc – GOFLEX',
+    h1: 'Veste Maroc',
+    headings: [{ level: 2, text: 'Avis clients' }],
+    text: 'Coupe-vent noir à capuche, léger. Pack Supporter : 1 Veste Maroc, 1 Cagoule, 1 Chaîne.'
+  };
+  const otherPages = [
+    { url: 'https://goflexworld.com/products/cagoule', title: 'Cagoule – GOFLEX', h1: 'Cagoule' },
+    { url: 'https://goflexworld.com/products/veste-algerie', title: 'Veste Algérie – GOFLEX', h1: 'Veste Algérie' }
+  ];
+  const volume = (keyword: string, avgMonthlySearches: number, monthly?: number[]) => ({ keyword, avgMonthlySearches, ...(monthly ? { monthly } : {}) });
+  const suggestion = (keyword: string, kind: 'attribute' | 'occasion' | 'synonym' | 'product' | 'brand', evidence = '') => ({ keyword, kind, evidence });
+  const thirdPartyBrands = brandsFromDomains(['eu.puma.com', 'intersport.fr', 'goflexworld.com', 'veste-maroc.com'], ['goflexworld'], `${page.title} ${page.h1}`);
+  assert.deepEqual(thirdPartyBrands, ['puma', 'intersport']);
+  const rows = classifyOpportunities({
+    suggestions: [
+      suggestion('veste du maroc', 'synonym'),
+      suggestion('veste maroc noir', 'attribute', 'Coupe-vent noir à capuche'),
+      suggestion('veste maroc homme', 'attribute', 'Phrase inventée par le modèle'),
+      suggestion('cagoule maroc', 'product'),
+      suggestion('veste algérie', 'product'),
+      suggestion('survêtement maroc', 'product'),
+      suggestion('pack supporter maroc', 'attribute'),
+      suggestion('veste maroc puma', 'attribute'),
+      suggestion('veste maroc 2026', 'occasion'),
+      suggestion('coupe vent femme', 'attribute')
+    ],
+    volumes: [
+      volume('veste maroc noir', 320, [40, 70, 210, 320, 50, 480, 1300, 210, 320, 210, 90, 260]),
+      volume('veste maroc homme', 50),
+      volume('cagoule maroc', 40),
+      volume('veste algérie', 900),
+      volume('survêtement maroc', 2900),
+      volume('pack supporter maroc', 10),
+      volume('veste maroc puma', 500),
+      volume('veste maroc 2026', 70, [0, 0, 0, 70, 10, 50, 90, 30, 260, 170, 30, 50]),
+      volume('coupe vent femme', 8100)
+    ],
+    page,
+    otherPages,
+    known: ['veste maroc', 'coupe vent maroc'],
+    thirdPartyBrands,
+    subject: 'veste maroc'
+  });
+  const byKeyword = new Map(rows.map((row) => [row.keyword, row]));
+  // Mêmes mots qu'une recherche déjà listée : pas reprise
+  assert.ok(!byKeyword.has('veste du maroc'));
+  assert.equal(byKeyword.get('veste maroc noir')?.status, 'ready');
+  assert.equal(byKeyword.get('veste maroc noir')?.evidence, 'Coupe-vent noir à capuche');
+  assert.equal(byKeyword.get('veste maroc noir')?.peakRatio, 4.4);
+  assert.equal(byKeyword.get('veste maroc homme')?.status, 'confirm');
+  assert.deepEqual(byKeyword.get('veste maroc homme')?.missing, ['homme']);
+  // Phrase introuvable dans la page : non reprise
+  assert.equal(byKeyword.get('veste maroc homme')?.evidence, undefined);
+  assert.equal(byKeyword.get('cagoule maroc')?.status, 'other-page');
+  assert.equal(byKeyword.get('cagoule maroc')?.otherPage?.url, 'https://goflexworld.com/products/cagoule');
+  assert.equal(byKeyword.get('veste algérie')?.status, 'other-page');
+  assert.equal(byKeyword.get('survêtement maroc')?.status, 'off-offer');
+  assert.equal(byKeyword.get('pack supporter maroc')?.rejection, 'low-volume');
+  assert.equal(byKeyword.get('veste maroc puma')?.rejection, 'third-party-brand');
+  assert.equal(byKeyword.get('veste maroc 2026')?.status, 'confirm');
+  assert.equal(byKeyword.get('veste maroc 2026')?.recent, true);
+  // Moins de 2 mots en commun avec le sujet : plus large, classée après les recherches du sujet malgré son volume
+  assert.equal(byKeyword.get('coupe vent femme')?.broad, true);
+  assert.equal(byKeyword.get('veste maroc homme')?.broad, undefined);
+  assert.deepEqual(rows.filter((row) => row.status === 'confirm').map((row) => row.keyword), ['veste maroc 2026', 'veste maroc homme', 'coupe vent femme']);
+  // Ordre : intégrables, à confirmer (par volume), autre page, hors offre, écartées
+  assert.deepEqual(rows.map((row) => row.status), ['ready', 'confirm', 'confirm', 'confirm', 'other-page', 'other-page', 'off-offer', 'rejected', 'rejected']);
+  assert.deepEqual(seasonalityOf([100, 100, 100, 100, 100, 100]), {});
+});
+
+test('Requêtes notées : recherches hors page notées seulement cochées, avec leur volume ; moins de 20 recherches jamais notées sans volume', () => {
+  const opportunities = {
+    provider: 'google-ads',
+    simulated: false,
+    fetchedAt: '',
+    rows: [
+      {
+        keyword: 'veste maroc noir', kind: 'attribute' as const, avgMonthlySearches: 320, status: 'ready' as const, missing: [],
+        presence: { title: false, h1: false, h2: false, text: true }
+      }
+    ]
+  };
+  const research = {
+    provider: 'google-ads', simulated: false, fetchedAt: '',
+    rows: [
+      { keyword: 'veste maroc', origin: 'target' as const, avgMonthlySearches: 1600, presence: { title: true, h1: true, h2: false, text: true }, forSerp: false, relevance: 'match' as const },
+      { keyword: 'pack supporter maroc', origin: 'candidate' as const, avgMonthlySearches: 10, presence: { title: false, h1: false, h2: false, text: true }, forSerp: false, relevance: 'match' as const }
+    ]
+  };
+  const target = { query: 'veste maroc', confirmed: true };
+  // Choix automatique : la recherche hors page n'entre pas
+  assert.deepEqual(buildQuerySet({ target, research, opportunities }).map((entry) => entry.query), ['veste maroc']);
+  // Cochée : poids selon les volumes (1 600 et 320), plafonnés à 75 % à deux
+  const manual = buildQuerySet({ target, research, opportunities, override: ['veste maroc', 'veste maroc noir'] });
+  assert.deepEqual(manual.map((entry) => [entry.query, entry.volume, Math.round(entry.weight * 100)]), [['veste maroc', 1600, 75], ['veste maroc noir', 320, 25]]);
+  // Sans volume retenu (aucune recherche « visée » de 20 ou plus) : la recherche connue à 10 par mois n'est pas notée
+  const weak = { ...research, rows: research.rows.map((row) => ({ ...row, relevance: 'broad' as const })) };
+  const fallback = buildQuerySet({
+    target,
+    research: weak,
+    candidates: [
+      { query: 'pack supporter maroc', intent: 'TRANSACTIONAL' as const, suggestedByGoogle: true },
+      { query: 'coupe vent à capuche', intent: 'TRANSACTIONAL' as const, suggestedByGoogle: true }
+    ]
+  });
+  assert.deepEqual(fallback.map((entry) => entry.query), ['veste maroc', 'coupe vent à capuche']);
+});
+
+test('Réécriture : périmée quand les requêtes notées changent, ancienne proposition comparée sur la principale seule', () => {
+  const base = { contentHash: 'h1', family: 'present' as const, principal: 'veste maroc', queries: ['veste maroc', 'veste logo'] };
+  assert.equal(isRewriteOutdated(base, { ...base, queries: ['veste logo', 'veste maroc'] }), false);
+  assert.equal(isRewriteOutdated(base, { ...base, queries: ['veste maroc', 'veste logo', 'coupe vent maroc'] }), true);
+  assert.equal(isRewriteOutdated(base, { ...base, queries: ['veste maroc'] }), true);
+  assert.equal(isRewriteOutdated(base, { ...base, family: 'inform' }), true);
+  assert.equal(isRewriteOutdated(base, { ...base, contentHash: 'h2' }), true);
+  // Proposition d'avant les familles (sans famille enregistrée) : pas périmée pour autant
+  const old = { contentHash: 'h1', principal: 'veste maroc' };
+  assert.equal(isRewriteOutdated(old, base), false);
+  assert.equal(isRewriteOutdated(old, { ...base, principal: 'veste coupe vent' }), true);
+});
+
+test('Zones : pays et autre lieu ajoutés à la fin de la recherche, sans doublon ; texte libre nettoyé', () => {
+  const maroc: GeoZone = { id: 'pays:MA', kind: 'pays', code: 'MA', name: 'Maroc', label: 'Maroc' };
+  const belgique: GeoZone = { id: 'pays:BE', kind: 'pays', code: 'BE', name: 'Belgique', label: 'Belgique' };
+  const azur: GeoZone = { id: 'lieu:cote-d-azur', kind: 'lieu', code: "Côte d'Azur", name: "Côte d'Azur", label: "Côte d'Azur" };
+  assert.equal(queryForZone('veste maroc', maroc), 'veste maroc');
+  assert.equal(queryForZone('veste coupe vent', belgique), 'veste coupe vent belgique');
+  assert.equal(queryForZone('agence web', azur), "agence web côte d'azur");
+  assert.equal(cleanPlaceName('  Pays   basque '), 'Pays basque');
+  assert.equal(cleanPlaceName('<script>'), null);
+  assert.equal(cleanPlaceName('x'), null);
+  const france: GeoZone = { id: 'pays:FR', kind: 'pays', code: 'FR', name: 'France', label: 'France' };
+  const pages = [{ id: 'p1', path: '/contact', address: '12 rue des Lilas 31000 Toulouse' }];
+  assert.deepEqual(zoneCoverage(france, pages).map((page) => page.reason), ['adresse']);
+  assert.deepEqual(zoneCoverage(maroc, pages), []);
+});
+
+test('Carte des zones : distance, villes du rayon (les plus peuplées), contour allégé, couleur selon la position', () => {
+  const toulouse = { latitude: 43.6007, longitude: 1.4328 };
+  const colomiers = { code: '31149', name: 'Colomiers', departement: '31', latitude: 43.6139, longitude: 1.3367, population: 40882 };
+  const blagnac = { code: '31069', name: 'Blagnac', departement: '31', latitude: 43.6455, longitude: 1.3758, population: 27604 };
+  const auch = { code: '32013', name: 'Auch', departement: '32', latitude: 43.6465, longitude: 0.5855, population: 22000 };
+  assert.ok(Math.abs(distanceKm(toulouse, colomiers) - 7.9) < 0.3);
+  const inside = communesInRadius([blagnac, auch, colomiers], toulouse, 20);
+  assert.deepEqual(inside.communes.map((commune) => commune.name), ['Colomiers', 'Blagnac']);
+  assert.equal(inside.total, 2);
+  assert.equal(communesInRadius([blagnac, auch, colomiers], toulouse, 80).total, 3);
+  assert.equal(communesInRadius([blagnac, colomiers], toulouse, 20, 1).communes.length, 1);
+  const ring: [number, number][] = [[1, 1], [1.00001, 1.00001], [1.5, 1], [1.5, 1.5], [1, 1.5], [1, 1]];
+  const light = simplifyRing(ring, 0.001);
+  assert.equal(light.length, 5);
+  assert.deepEqual(light[0], light[light.length - 1]);
+  const base = { measured: 0, visible: 0, packShown: 0, packPresent: 0, packRead: 0 };
+  assert.equal(zoneBand(base), 'unmeasured');
+  assert.equal(zoneBand({ ...base, measured: 3 }), 'absent');
+  assert.equal(zoneBand({ ...base, measured: 3, visible: 1, best: { query: 'q', path: '/', rank: 2 } }), 'top3');
+  assert.equal(zoneBand({ ...base, measured: 3, visible: 1, best: { query: 'q', path: '/', rank: 8 } }), 'top10');
+  assert.equal(zoneBand({ ...base, measured: 3, visible: 1, best: { query: 'q', path: '/', rank: 17 } }), 'top30');
+});
+
+test('Tableau personnalisable : déplacer dans son groupe, épingler, masquer, largeurs bornées, disposition enregistrée remise d’aplomb', () => {
+  const columns: TableColumn[] = [
+    { id: 'select', label: 'Sélection', width: 56, fixed: true },
+    { id: 'url', label: 'URL', width: 300, minWidth: 160 },
+    { id: 'role', label: 'Rôle', width: 260 },
+    { id: 'tech', label: 'Score', width: 120 },
+    { id: 'words', label: 'Texte', width: 120 },
+  ];
+  const ids = (layout: ReturnType<typeof defaultLayout>) => visibleColumns(layout, columns).map((column) => column.id);
+  let layout = defaultLayout(columns);
+  assert.deepEqual(ids(layout), ['select', 'url', 'role', 'tech', 'words']);
+  layout = moveColumn(layout, 'tech', 0);
+  assert.deepEqual(ids(layout), ['select', 'tech', 'url', 'role', 'words']);
+  // Épinglée : passe en tête, après les colonnes fixes ; elle ne se déplace qu'au milieu des épinglées
+  layout = togglePinned(layout, 'words');
+  assert.deepEqual(ids(layout), ['select', 'words', 'tech', 'url', 'role']);
+  assert.deepEqual(stickyOffsets(layout, visibleColumns(layout, columns)), { select: 0, words: 56 });
+  assert.equal(moveColumn(layout, 'words', 3), layout);
+  layout = moveColumn(layout, 'role', 0);
+  assert.deepEqual(ids(layout), ['select', 'words', 'role', 'tech', 'url']);
+  // Masquée : retirée des épinglées ; la dernière colonne visible ne se masque pas
+  layout = toggleHidden(togglePinned(layout, 'url'), 'url');
+  assert.deepEqual(layout.pinned, ['words']);
+  for (const id of ['role', 'tech', 'words']) layout = toggleHidden(layout, id);
+  assert.equal(layout.hidden.length, 3);
+  assert.deepEqual(ids(layout), ['select', 'words']);
+  assert.equal(clampWidth(columns[1], 40), 160);
+  assert.equal(clampWidth(columns[2], 5000), 640);
+  // Enregistrement ancien : colonne inconnue retirée, nouvelle colonne ajoutée, largeur bornée, densité inconnue ignorée
+  const merged = mergeLayout({ order: ['words', 'ghost', 'url'], hidden: ['url'], pinned: ['url', 'words'], widths: { url: 10 } }, columns);
+  assert.deepEqual(merged.order, ['words', 'url', 'role', 'tech']);
+  assert.deepEqual(merged.pinned, ['words']);
+  assert.equal(merged.widths.url, 160);
+  assert.equal(layoutSummary(merged), '3 sur 4 colonnes · 1 épinglée');
+});
+
+test('Tableau personnalisable : métriques ajoutables masquées par défaut, nouvelles métriques masquées à la relecture', () => {
+  const columns: TableColumn[] = [
+    { id: 'url', label: 'URL', width: 300 },
+    { id: 'm:lcp', label: 'LCP', width: 120, group: 'Technique', defaultHidden: true },
+    { id: 'm:title', label: 'Title', width: 260, group: 'Page', defaultHidden: true },
+  ];
+  const base = defaultLayout(columns);
+  assert.deepEqual(base.hidden, ['m:lcp', 'm:title']);
+  assert.deepEqual(visibleColumns(base, columns).map((column) => column.id), ['url']);
+  // Enregistrement d'avant l'ajout de « Title » : LCP affichée par l'utilisateur, Title arrive masquée
+  const merged = mergeLayout({ order: ['url', 'm:lcp'], hidden: [], pinned: [], widths: {} }, columns);
+  assert.deepEqual(merged.order, ['url', 'm:lcp', 'm:title']);
+  assert.deepEqual(merged.hidden, ['m:title']);
+  assert.deepEqual(visibleColumns(merged, columns).map((column) => column.id), ['url', 'm:lcp']);
+});
+
+test('Plan d’action : une tâche par page, vérifiée par le dernier audit ; ordre des colonnes', () => {
+  assert.equal(pageKeyOf('https://www.Big-Happy.fr/contact/'), 'big-happy.fr/contact');
+  assert.equal(pageKeyOf('https://big-happy.fr/'), 'big-happy.fr/');
+  const created = new Date('2026-11-01');
+  const audit = { completedAt: new Date('2026-11-05'), pillarChecked: true, detected: true, pageCrawled: true };
+  const task = { status: 'DONE' as const, createdAt: created, doneAt: new Date('2026-11-02'), pillar: 'TECH', pageKey: 'big-happy.fr/contact' };
+  assert.equal(verificationOf(task, audit), 'still-detected');
+  // Terminée après l'audit : l'audit ne pouvait que la relever, rien à signaler
+  assert.equal(verificationOf({ ...task, doneAt: new Date('2026-11-08') }, audit), null);
+  assert.equal(verificationOf(task, { ...audit, detected: false }), null);
+  assert.equal(verificationOf({ ...task, status: 'TODO' }, { ...audit, detected: false }), 'not-detected');
+  // Tâche créée après l'audit : il ne l'a pas vérifiée
+  assert.equal(verificationOf({ ...task, status: 'TODO', createdAt: new Date('2026-11-06') }, { ...audit, detected: false }), null);
+  assert.equal(verificationOf({ ...task, status: 'DOING' }, { ...audit, pageCrawled: false }), 'page-missing');
+  // Contenu pas encore analysé (avant le choix des pages stratégiques) : rien à conclure
+  assert.equal(verificationOf({ ...task, pillar: 'EDITORIAL', status: 'TODO' }, { ...audit, detected: false, pillarChecked: false }), null);
+  assert.deepEqual(reorderColumn(['a', 'b', 'c'], 'x', 'b'), ['a', 'x', 'b', 'c']);
+  assert.deepEqual(reorderColumn(['a', 'b', 'c'], 'c', 'a'), ['c', 'a', 'b']);
+  assert.deepEqual(reorderColumn(['a', 'b'], 'x', null), ['a', 'b', 'x']);
+  assert.deepEqual(reorderColumn(['a', 'b'], 'x', 'inconnu'), ['a', 'b', 'x']);
+});
+
+test('Réécriture : plan complet de la page, H2 réécrits à leur place, sections ajoutées en fin', () => {
+  const rewrite = {
+    h1: { current: 'Bienvenue', proposed: 'Agence de communication à Toulouse' },
+    sections: [{ current: 'Nos services', proposed: 'Nos services de communication', intro: 'Nous créons vos supports.', why: 'Requête reprise' }],
+    newSections: [{ heading: 'Tarifs', intro: '[À COMPLÉTER : fourchette de prix]', why: 'Question fréquente' }]
+  };
+  const headings = [
+    { level: 1, text: 'Bienvenue' },
+    { level: 2, text: 'Nos  services' },
+    { level: 3, text: 'Identité visuelle' },
+    { level: 2, text: 'Gestion des cookies' },
+    { level: 2, text: 'Contact' }
+  ];
+  const outline = rewriteOutline(rewrite, headings);
+  assert.deepEqual(
+    outline.map((line) => [line.level, line.text, line.status]),
+    [
+      [1, 'Agence de communication à Toulouse', 'rewritten'],
+      [2, 'Nos services de communication', 'rewritten'],
+      [3, 'Identité visuelle', 'kept'],
+      [2, 'Contact', 'kept'],
+      [2, 'Tarifs', 'added']
+    ]
+  );
+  assert.equal(outline[1].current, 'Nos services');
+  // Sans titres enregistrés : les H2 réécrits dans l'ordre de la proposition
+  assert.deepEqual(rewriteOutline(rewrite).map((line) => line.text), ['Agence de communication à Toulouse', 'Nos services de communication', 'Tarifs']);
+  const markdown = rewriteMarkdown({ title: { current: '', proposed: 'T' }, meta: { current: '', proposed: 'M' } }, outline);
+  assert.ok(
+    markdown.startsWith(
+      ['Title : T', 'Méta description : M', '# Agence de communication à Toulouse', '## Nos services de communication', 'Nous créons vos supports.'].join('\n\n')
+    )
+  );
+  assert.ok(markdown.includes('### Identité visuelle'));
 });

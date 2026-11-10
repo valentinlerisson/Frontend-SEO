@@ -1,13 +1,11 @@
 import type { InspectionData } from '@/lib/audit-data';
 import type { ContentQualityInsights, EditorialSignals, PageRole } from '@/core/domain/types';
+import { staleMentions } from '@/core/domain/scoring/freshness';
 
 type Accordion = InspectionData['editorial']['accordions'][number];
 
 const ZONE_LABEL = { TITLE: 'Title', H1: 'H1', CONTENT: 'contenu' } as const;
 const LEVEL_LABEL = { LOW: 'faible', MEDIUM: 'moyen', HIGH: 'élevé' } as const;
-
-const DIAGNOSTIC_NOTE =
-  'Diagnostic hors barème : il n’influence pas le score sur 100.';
 
 /** Accordéon affiché quand la donnée n'existe pas (ancien audit ou analyse IA indisponible) */
 export function unavailableAccordion(title: string, reason: string): Accordion {
@@ -15,7 +13,9 @@ export function unavailableAccordion(title: string, reason: string): Accordion {
 }
 
 export function freshnessAccordion(signals: EditorialSignals): Accordion {
-  const { outdatedMentions, lastUpdated } = signals.freshness;
+  const { lastUpdated } = signals.freshness;
+  // « depuis 2019 », « fondée en 1998 » : années historiques, pas à mettre à jour
+  const outdatedMentions = staleMentions(signals.freshness.outdatedMentions);
   const items: Accordion['items'] = [];
 
   if (lastUpdated) {
@@ -44,7 +44,7 @@ export function freshnessAccordion(signals: EditorialSignals): Accordion {
   return {
     title: '8. Fraîcheur & obsolescence',
     scoreText: outdatedMentions.length > 0 ? `${outdatedMentions.length} mention(s)` : 'RAS',
-    aiReasoning: `Détection automatique des années vieilles d'au moins deux ans, avec leur contexte : une date historique légitime peut rester. ${DIAGNOSTIC_NOTE}`,
+    aiReasoning: 'Années vieilles d’au moins deux ans, avec leur contexte ; celles qui datent un début (« depuis 2019 », « fondée en ») sont ignorées.',
     items,
   };
 }
@@ -75,7 +75,7 @@ export function readabilityAccordion(signals: EditorialSignals, wordCount: numbe
   return {
     title: '9. Lisibilité & scannabilité',
     scoreText: reliable ? `${r.avgParagraphWords} mots/§` : 'Peu fiable',
-    aiReasoning: `Mesures objectives sur le contenu principal (hors menu, en-tête et pied de page). ${DIAGNOSTIC_NOTE}`,
+    aiReasoning: 'Mesures sur le contenu principal (hors menu, en-tête et pied de page).',
     items,
   };
 }
@@ -122,7 +122,7 @@ export function inContentLinksAccordion(signals: EditorialSignals, wordCount: nu
   return {
     title: '10. Maillage dans le contenu',
     scoreText: `${l.total} lien(s)`,
-    aiReasoning: `Seuls les liens du corps de la page comptent ici : menu, en-tête, pied de page et encarts latéraux sont exclus. ${DIAGNOSTIC_NOTE}`,
+    aiReasoning: 'Seuls les liens du corps de la page comptent ici : menu, en-tête, pied de page et encarts latéraux sont exclus.',
     items,
   };
 }
@@ -137,20 +137,21 @@ export function qualityAccordion(quality: ContentQualityInsights, role: PageRole
       text: exp.detected
         ? `Expérience vécue détectée (confiance ${LEVEL_LABEL[exp.confidence]})`
         : 'Peu de preuves d’expérience vécue',
-      status: exp.detected ? 'valid' : expectsExperience ? 'warning' : 'info',
+      // Estimations de l'IA, hors note : information (bleu), jamais une alerte
+      status: exp.detected ? 'valid' : 'info',
       details: exp.evidence.map((quote) => ({ label: `« ${quote} »`, tag: 'Extrait', status: 'valid' as const })),
     },
     {
       text: `Gain d'information ${LEVEL_LABEL[gain.level]} par rapport à un contenu générique`,
-      status: gain.level === 'LOW' ? 'warning' : 'valid',
+      status: gain.level === 'LOW' ? 'info' : 'valid',
     },
     {
       text: gain.hasOriginalData ? 'Données ou méthode propres présentes' : 'Aucune donnée ni méthode propre repérée',
-      status: gain.hasOriginalData ? 'valid' : 'warning',
+      status: gain.hasOriginalData ? 'valid' : 'info',
     },
     {
       text: gain.hasConcreteCases ? 'Cas concrets ou exemples présents' : 'Aucun cas concret repéré',
-      status: gain.hasConcreteCases ? 'valid' : 'warning',
+      status: gain.hasConcreteCases ? 'valid' : 'info',
     },
     // Évoquer les limites d'une méthode ou d'un produit n'est attendu que d'un article
     ...(role === 'article'
@@ -166,15 +167,15 @@ export function qualityAccordion(quality: ContentQualityInsights, role: PageRole
   if (gain.genericFluff.length > 0) {
     items.push({
       text: `${gain.genericFluff.length} passage(s) générique(s) repéré(s)`,
-      status: 'warning',
-      details: gain.genericFluff.map((passage) => ({ label: `« ${passage} »`, tag: 'Générique', status: 'warning' as const })),
+      status: 'info',
+      details: gain.genericFluff.map((passage) => ({ label: `« ${passage} »`, tag: 'Générique' })),
     });
   }
 
   return {
     title: '11. Expérience vécue & gain d’information',
     scoreText: `Gain ${LEVEL_LABEL[gain.level]}`,
-    aiReasoning: `${exp.advice} ${gain.advice} Indices fournis par l'IA, sans comparaison avec les pages concurrentes. ${DIAGNOSTIC_NOTE}`.replace(/\s+/g, ' '),
+    aiReasoning: `Indices fournis par l’IA, sans comparaison avec les pages concurrentes${expectsExperience ? '' : ' ; l’expérience vécue n’est pas attendue de ce type de page'}.`,
     items,
   };
 }

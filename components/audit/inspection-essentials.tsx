@@ -4,7 +4,9 @@ import { ArrowRight, Clock, Search } from 'lucide-react'
 import type { InspectionData, SubpageItem } from '@/lib/audit-data'
 import type { InspectionTab } from '@/components/providers/inspection-provider'
 import { describePagePosition } from '@/lib/serp-labels'
-import { scoreTone } from '@/lib/score-tone'
+import { bandOf, bucketOf } from '@/lib/score-bands'
+import { compact, Delta, lowerFirst, RankedBars, Sparkline, StatTile, ThresholdMeter } from '@/components/charts/viz'
+import { GEO_ENABLED } from '@/core/domain/features'
 
 type Pillar = 'tech' | 'editorial' | 'geo'
 const PILLAR_LABEL: Record<Pillar, string> = { tech: 'Technique', editorial: 'Contenu', geo: 'Moteurs IA' }
@@ -25,17 +27,58 @@ function effortOf(pillar: Pillar, text: string): string {
 function verdict(scores: { pillar: Pillar; score: number }[], query?: string): string {
   if (scores.length === 1) return 'Page non stratégique : seule la technique est analysée. Ajoutez-la aux pages stratégiques pour juger son contenu.'
   const weakest = [...scores].sort((a, b) => a.score - b.score)[0]
-  if (weakest.score >= 80) return 'Page solide sur les trois plans : il reste surtout à suivre sa position dans Google.'
+  if (weakest.score >= 80) return `Page solide sur les ${scores.length === 3 ? 'trois' : 'deux'} plans : il reste surtout à suivre sa position dans Google.`
   if (weakest.pillar === 'tech') return 'Des problèmes techniques freinent cette page : ce sont eux à corriger en premier.'
   if (weakest.pillar === 'editorial') {
-    return `Le contenu répond encore mal à la recherche visée${query ? ` « ${query} »` : ''} : c’est lui qu’il faut retravailler en priorité.`
+    return `Le contenu répond encore mal aux recherches visées${query ? `, à commencer par « ${query} »` : ''} : c’est lui qu’il faut retravailler en priorité.`
   }
   return 'Le contenu tient la route, mais les moteurs IA ont du mal à en reprendre des passages : c’est le chantier prioritaire.'
 }
 
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+
+/** Position mesurée d'une requête, avec la teinte de sa tranche (top 3, top 10, au-delà) */
+function PositionChip({ position }: { position?: number | null }) {
+  const bucket = bucketOf(position)
+  const color =
+    bucket === 'top3' ? 'var(--viz-pos-1)' : bucket === 'top10' ? 'var(--viz-pos-2)' : bucket === 'top30' ? 'var(--viz-pos-3)' : bucket === 'absent' ? 'var(--viz-absent)' : 'var(--viz-unmeasured)'
+  const text = position === undefined ? 'Non mesurée' : position === null ? 'Absente' : `n°${position}`
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-foreground">
+      <span className="size-2 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+      {text}
+    </span>
+  )
+}
+
+/** Requête présente dans le Title, l'introduction et un sous-titre H2/H3 */
+function PlacementChips({ missing }: { missing: string[] }) {
+  const zones = [
+    { key: 'Title', label: 'Title' },
+    { key: 'début du texte', label: 'Intro' },
+    { key: 'sous-titres', label: 'H2' },
+  ]
+  return (
+    <span className="inline-flex gap-1" aria-label={`Placée dans : ${zones.filter((zone) => !missing.includes(zone.key)).map((zone) => zone.label).join(', ') || 'aucune zone'}`}>
+      {zones.map((zone) => {
+        const present = !missing.includes(zone.key)
+        return (
+          <span
+            key={zone.key}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${present ? 'bg-chip-indigo text-foreground' : 'text-muted-foreground line-through opacity-70'}`}
+          >
+            {zone.label}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
 /**
- * Onglet « L'essentiel » du tiroir d'inspection : verdict, trois notes, position Google, et les trois actions qui
- * rapportent le plus (points en jeu, effort). Le détail reste dans les autres onglets.
+ * Onglet « L'essentiel » du tiroir d'inspection : verdict, trois notes avec leur évolution, où la page perd ses
+ * points, recherches visées et place dans Google, vitesse, et les trois actions qui rapportent le plus. Le détail
+ * reste dans les autres onglets ; chaque élément y renvoie.
  */
 export function InspectionEssentials({
   inspection,
@@ -48,12 +91,16 @@ export function InspectionEssentials({
   aiAvailable: boolean
   onOpen: (tab: InspectionTab, section?: number) => void
 }) {
+  const essentials = inspection.essentials
+  // Page non notée (contact, légale, utilitaire) : pas de note éditoriale à afficher
+  const editorialScore = inspection.editorial.score
   const scores: { pillar: Pillar; score: number }[] = [
     { pillar: 'tech', score: inspection.tech.score },
     ...(aiAvailable
       ? [
-          { pillar: 'editorial' as const, score: inspection.editorial.score },
-          { pillar: 'geo' as const, score: inspection.geo.score },
+          ...(editorialScore !== null ? [{ pillar: 'editorial' as const, score: editorialScore }] : []),
+          // GEO mis de côté (GEO_ENABLED) : ni note ni actions
+          ...(GEO_ENABLED ? [{ pillar: 'geo' as const, score: inspection.geo.score }] : []),
         ]
       : []),
   ]
@@ -68,52 +115,179 @@ export function InspectionEssentials({
     )
     .slice(0, 3)
   const serp = subpage?.serp?.status === 'DONE' ? subpage.serp : undefined
+  const querySet = aiAvailable ? inspection.editorial.querySet ?? [] : []
+  const mainQuery = querySet[0]?.query ?? (aiAvailable ? inspection.editorial.targetKeyword : undefined)
+
+  // Où la page perd ses points : 5 critères au plus, seulement les piliers analysés
+  const pillars = new Set(scores.map((item) => item.pillar))
+  const losses = (essentials?.losses ?? []).filter((loss) => pillars.has(loss.pillar)).slice(0, 5)
+  const topLoss = losses[0]
+
+  // Recherches visées : part du volume déjà dans le top 10, et évolution de la position sur la requête principale
+  const totalVolume = querySet.reduce((sum, entry) => sum + (entry.volume ?? 0), 0)
+  const measured = querySet.filter((entry) => entry.position !== undefined)
+  const inTop10 = measured.filter((entry) => typeof entry.position === 'number' && entry.position <= 10)
+  const top10Volume = inTop10.reduce((sum, entry) => sum + (entry.volume ?? 0), 0)
+  const maxVolume = Math.max(...querySet.map((entry) => entry.volume ?? 0), 0)
+  const queriesInsight =
+    measured.length === 0
+      ? 'Positions de ces recherches pas encore mesurées : lancez la mesure dans Positionnement.'
+      : totalVolume > 0
+        ? `${Math.round((top10Volume / totalVolume) * 100)} % du volume visé est déjà dans le top 10 de Google`
+        : `${inTop10.length} recherche${inTop10.length > 1 ? 's' : ''} sur ${querySet.length} dans le top 10 de Google`
+  const history = (subpage?.serpHistory ?? [])
+    .filter((entry) => mainQuery && entry.query.toLowerCase().startsWith(mainQuery.toLowerCase()))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-8)
+    .map((entry) => ({ label: shortDate(entry.date), value: entry.pagePosition ?? entry.sitelinkOf }))
+
+  const cwv = essentials?.cwv
+  const previous = essentials?.previous
+  const previousOf = (pillar: Pillar) => (previous ? previous[pillar] : null)
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-5">
       <p className="rounded-xl border border-line-indigo bg-tint-indigo p-4 text-base font-semibold text-foreground">
-        {verdict(scores, aiAvailable ? inspection.editorial.targetKeyword : undefined)}
+        {verdict(scores, mainQuery)}
       </p>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      {/* Notes côte à côte, sur toute la largeur de la fiche (sa largeur varie : pas de colonnes fixes) */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-3">
         {scores.map(({ pillar, score }) => {
-          const tone = scoreTone(score)
+          const before = previousOf(pillar)
           return (
-            <button
+            <StatTile
               key={pillar}
-              type="button"
+              label={PILLAR_LABEL[pillar]}
+              value={score}
+              unit="/100"
+              band={bandOf(score)}
               onClick={() => onOpen(pillar)}
-              className="rounded-xl border border-shade-33 bg-shade-1e p-4 text-left transition-colors hover:border-primary/50"
-            >
-              <span className="block text-xs text-muted-foreground">{PILLAR_LABEL[pillar]}</span>
-              <span className="block text-2xl font-extrabold tabular-nums" style={{ color: tone.textColor }}>
-                {score}
-                <span className="text-sm font-normal text-muted-foreground">/100</span>
-              </span>
-              <span className="block text-xs font-semibold" style={{ color: tone.textColor }}>
-                {tone.label}
-              </span>
-            </button>
+              delta={
+                previous && typeof before === 'number' ? (
+                  <Delta value={score - before} suffix=" pts" label={`depuis le ${shortDate(previous.date)}`} />
+                ) : undefined
+              }
+            />
           )
         })}
       </div>
 
-      <button
-        type="button"
-        onClick={() => onOpen('serp')}
-        className="flex items-center gap-2 rounded-xl border border-shade-33 bg-shade-1e p-3 text-left text-sm hover:border-primary/50"
-      >
-        <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        {serp ? (
-          <span>
-            Google : <strong>{describePagePosition(serp).badge}</strong> sur « {serp.query} »
-            {serp.zone ? ` depuis ${serp.zone.city}` : ''}
-          </span>
-        ) : (
-          <span className="text-muted-foreground">Position dans Google non mesurée : lancez la mesure dans Positionnement.</span>
+      <section aria-labelledby="essentials-losses" className="rounded-xl border border-shade-33 bg-shade-1e p-4">
+        <h3 id="essentials-losses" className="text-base font-bold text-foreground">
+          {topLoss
+            ? `${PILLAR_LABEL[topLoss.pillar]} : ${lowerFirst(topLoss.label)} coûte le plus de points`
+            : 'Aucun point perdu notable sur cette page'}
+        </h3>
+        {losses.length > 0 && (
+          <>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Points perdus sur la note de chaque pilier, critère par critère. Cliquez pour voir le détail.
+            </p>
+            <div className="mt-3">
+              <RankedBars
+                ariaLabel="Où cette page perd ses points"
+                items={losses.map((loss) => ({
+                  id: `${loss.pillar}-${loss.key}`,
+                  label: loss.label,
+                  sub: PILLAR_LABEL[loss.pillar],
+                  value: loss.lost,
+                  display: `−${Math.round(loss.lost)} pts`,
+                  onSelect: () => onOpen(loss.pillar, loss.section),
+                }))}
+              />
+            </div>
+          </>
         )}
-        <ArrowRight className="ml-auto size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      </button>
+      </section>
+
+      {querySet.length > 0 ? (
+        <section aria-labelledby="essentials-queries" className="rounded-xl border border-shade-33 bg-shade-1e p-4">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 id="essentials-queries" className="text-base font-bold text-foreground">{queriesInsight}</h3>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Recherches sur lesquelles la page est notée{totalVolume > 0 ? `, ${compact(totalVolume)} recherches par mois au total` : ''}.
+              </p>
+            </div>
+            {history.filter((point) => point.value !== null).length >= 2 && (
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                Position sur « {mainQuery} »
+                <Sparkline points={history} label={`Position sur « ${mainQuery} »`} format={(value) => `n°${value}`} invert />
+              </span>
+            )}
+          </div>
+          <ul className="mt-3 flex flex-col gap-2.5">
+            {querySet.map((entry) => (
+              <li key={entry.query}>
+                <button
+                  type="button"
+                  onClick={() => onOpen('serp')}
+                  className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-shade-25 focus-visible:bg-shade-25"
+                >
+                  <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="min-w-0 text-sm text-foreground">{entry.query}</span>
+                    <span className="flex items-center gap-3">
+                      <PlacementChips missing={entry.coverage.missing} />
+                      <PositionChip position={entry.position} />
+                    </span>
+                  </span>
+                  {maxVolume > 0 && (
+                    <span className="mt-1 flex items-center gap-2">
+                      <span className="block h-2.5 flex-1" aria-hidden="true">
+                        <span
+                          className="block h-2.5 rounded-r-[4px]"
+                          style={{ width: `${Math.max(2, ((entry.volume ?? 0) / maxVolume) * 100)}%`, backgroundColor: 'var(--viz-accent)' }}
+                        />
+                      </span>
+                      <span className="w-24 shrink-0 text-right text-xs text-muted-foreground">
+                        {entry.volume !== undefined ? `${compact(entry.volume)} / mois` : 'volume inconnu'}
+                      </span>
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onOpen('serp')}
+          className="flex items-center gap-2 rounded-xl border border-shade-33 bg-shade-1e p-3 text-left text-sm hover:border-primary/50"
+        >
+          <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          {serp ? (
+            <span>
+              Google : <strong>{describePagePosition(serp).badge}</strong> sur « {serp.query} »
+              {serp.zone ? ` depuis ${serp.zone.city}` : ''}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Position dans Google non mesurée : lancez la mesure dans Positionnement.</span>
+          )}
+          <ArrowRight className="ml-auto size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      )}
+
+      {cwv && (
+        <section aria-labelledby="essentials-speed" className="rounded-xl border border-shade-33 bg-shade-1e p-4">
+          <h3 id="essentials-speed" className="text-base font-bold text-foreground">
+            Vitesse d’affichage mesurée par Google
+          </h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">Seuils de Google : vert bon, jaune à améliorer, rouge mauvais.</p>
+          <div className="mt-3 flex flex-col gap-3">
+            {typeof cwv.lcp === 'number' && (
+              <ThresholdMeter label="Affichage du contenu principal (LCP)" value={cwv.lcp} display={`${cwv.lcp.toLocaleString('fr-FR')} s`} good={2.5} poor={4} max={6} />
+            )}
+            {typeof cwv.inp === 'number' && (
+              <ThresholdMeter label="Réactivité aux clics (INP)" value={cwv.inp} display={`${Math.round(cwv.inp)} ms`} good={200} poor={500} max={800} />
+            )}
+            {typeof cwv.cls === 'number' && (
+              <ThresholdMeter label="Stabilité de la mise en page (CLS)" value={cwv.cls} display={cwv.cls.toLocaleString('fr-FR')} good={0.1} poor={0.25} max={0.4} />
+            )}
+          </div>
+        </section>
+      )}
 
       <section aria-labelledby="essentials-actions">
         <h3 id="essentials-actions" className="text-base font-bold text-foreground">
